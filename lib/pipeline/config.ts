@@ -49,15 +49,18 @@ export const ALL_SYMBOLS = [...EQUITY_SYMBOLS, ...Object.keys(MACRO_SYMBOL_MAP)]
 /** Symbols treated as macro context rather than single-name news. */
 export const MACRO_SECTORS: Sector[] = ["macro", "index", "commodity"]
 
-/** The Groq model used to cluster and analyze RSS coverage. */
-export const ANALYSIS_MODEL = "llama3-70b-8192"
+/** Fast Groq model used to classify articles and confirm event clusters. */
+export const CLASSIFICATION_MODEL = "openai/gpt-oss-20b"
+
+/** Groq model used for final market-impact analysis of confirmed clusters. */
+export const ANALYSIS_MODEL = "openai/gpt-oss-120b"
 
 /** Public RSS feeds; an unavailable publisher only degrades that one source. */
 export const RSS_FEEDS = [
-  { outlet: "CNBC", url: "https://www.cnbc.com/id/10000664/device/rss/rss.xml" },
+  { outlet: "CNBC (Google News)", url: "https://news.google.com/rss/search?q=site%3Acnbc.com%2Ffinance%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
   { outlet: "Financial Times", url: "https://www.ft.com/markets?format=rss" },
   { outlet: "MarketWatch", url: "https://feeds.content.dowjones.io/public/rss/mw_topstories" },
-  { outlet: "Reuters", url: "https://feeds.reuters.com/reuters/businessNews" },
+  { outlet: "Reuters (Google News)", url: "https://news.google.com/rss/search?q=site%3Areuters.com%2Fmarkets%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
   { outlet: "Yahoo Finance", url: "https://finance.yahoo.com/news/rssindex" },
 ] as const
 
@@ -65,8 +68,17 @@ export const RSS_FEEDS = [
 export const INGEST = {
   /** Company-news symbols polled per 15-min run (rotates across runs). */
   companySymbolsPerRun: 6,
-  /** Max articles handed to the model in one clustering pass. */
+  /** Maximum fresh RSS articles considered per run. */
   maxArticlesPerRun: 40,
+  /** Classification batches stay below free-tier token pressure. */
+  classificationBatchSize: 15,
+  /** Cache every RSS article/classification for this long. */
+  articleCacheDays: 7,
+  /** Candidate articles can cluster across this rolling window. */
+  clusterWindowHours: 36,
+  /** Per-run Groq guardrails (estimated plus returned usage). */
+  groqTokenBudget: 9_000,
+  minimumClassificationConfidence: 0.78,
   /** Articles older than this are ignored. */
   articleMaxAgeHours: 24,
   /** Minimum articles required to form a story. */

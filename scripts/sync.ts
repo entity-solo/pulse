@@ -1,13 +1,41 @@
 import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 
-async function main() {
-  try { for (const line of (await readFile(resolve(process.cwd(), ".env.local"), "utf8")).split(/\r?\n/)) { const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/); if (match && !process.env[match[1]]) process.env[match[1]] = match[2].replace(/^(['"])(.*)\1$/, "$2") } } catch (error: any) { if (error?.code !== "ENOENT") throw error }
-  const secret = process.env.CRON_SECRET
-  if (!secret) throw new Error("Missing CRON_SECRET (set it in .env.local or your shell)")
-  const baseUrl = (process.env.PULSE_URL ?? "http://localhost:3000").replace(/\/$/, "")
-  const targets = process.argv.slice(2).length ? process.argv.slice(2) : ["ingest", "macro"]
-  for (const target of targets) { if (target !== "ingest" && target !== "macro") throw new Error(`Unknown job '${target}'. Use ingest or macro.`); const response = await fetch(`${baseUrl}/api/cron/${target}`, { headers: { Authorization: `Bearer ${secret}` } }); console.log(`${target}: ${response.status} ${await response.text()}`); if (!response.ok) process.exitCode = 1 }
+async function loadLocalEnv() {
+  try {
+    const source = await readFile(resolve(process.cwd(), ".env.local"), "utf8")
+    for (const line of source.split(/\r?\n/)) {
+      const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/)
+      if (match && !process.env[match[1]]) process.env[match[1]] = match[2].replace(/^(['"])(.*)\1$/, "$2")
+    }
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") throw error
+  }
 }
 
-main().catch((error) => { console.error(error); process.exitCode = 1 })
+async function main() {
+  await loadLocalEnv()
+  const targets = process.argv.slice(2).length ? process.argv.slice(2) : ["ingest", "macro"]
+  const { logRun, runIngest, runQuotes } = await import("@/lib/pipeline/ingest")
+  const { createAdminClient } = await import("@/lib/supabase/admin")
+
+  for (const target of targets) {
+    if (target === "ingest") {
+      console.log(JSON.stringify(await runIngest(), null, 2))
+      continue
+    }
+    if (target === "macro") {
+      const startedAt = new Date().toISOString()
+      const result = await runQuotes({ equities: false, macro: true })
+      await logRun(createAdminClient(), result, startedAt)
+      console.log(JSON.stringify(result, null, 2))
+      continue
+    }
+    throw new Error(`Unknown job '${target}'. Use ingest or macro.`)
+  }
+}
+
+main().catch((error) => {
+  console.error(error)
+  process.exitCode = 1
+})

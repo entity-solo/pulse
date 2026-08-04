@@ -1,140 +1,92 @@
-import { generateObject } from "ai"
-import { createGroq } from "@ai-sdk/groq"
-import { z } from "zod"
-import { ALL_SYMBOLS, ANALYSIS_MODEL, INGEST } from "./config"
+import { ALL_SYMBOLS, ANALYSIS_MODEL, CLASSIFICATION_MODEL, INGEST } from "./config"
 import type { Article } from "./news"
 
-const groq = createGroq({ apiKey: process.env.GROQ_API_KEY })
+const allowedSymbols = new Set<string>(ALL_SYMBOLS)
+const sectors = ["tech", "finance", "energy", "macro"] as const
+type Sector = (typeof sectors)[number]
+type Sentiment = "bull" | "bear" | "neut"
+export type Classification = { kind: "ticker"; value: string; confidence: number; evidence: string } | { kind: "sector"; value: Sector; confidence: number; evidence: string }
+export type ClassifiedArticle = { article: Article; classification: Classification }
 
-const sentiment = z.enum(["bull", "bear", "neut"])
+const aliases: Record<string, readonly string[]> = {
+  NVDA: ["nvidia"], AAPL: ["apple"], MSFT: ["microsoft"], TSLA: ["tesla"], AMZN: ["amazon"], GOOGL: ["alphabet", "google"], META: ["meta platforms"], JPM: ["jpmorgan", "jpmorgan chase"], GS: ["goldman sachs"], BAC: ["bank of america"], WFC: ["wells fargo"], XOM: ["exxon mobil", "exxon"], CVX: ["chevron"], COP: ["conocophillips"], SLB: ["schlumberger"],
+}
+const sectorTicker: Record<Sector, string> = { tech: "NDX", finance: "SPX", energy: "WTI", macro: "SPX" }
+const stopWords = new Set(["the", "and", "for", "with", "from", "after", "into", "over", "that", "this", "will", "stock", "shares", "market", "company", "reports", "quarterly", "earnings", "says", "said"])
 
-/**
- * The model returns article INDEXES rather than copied text, so headlines,
- * outlets and URLs are always the verbatim provider values. This removes any
- * chance of the model inventing a source or fabricating a link.
- */
-const clusterSchema = z.object({
-  events: z
-    .array(
-      z.object({
-        event_key: z
-          .string()
-          .describe("Stable lowercase slug identifying this real-world event, e.g. 'nvda-q3-datacenter-beat'. Must stay identical if the same event is seen again in a later run."),
-        ticker: z.string().describe("The single most affected symbol. Must be one of the allowed symbols."),
-        is_macro: z.boolean().describe("True when the event is economy-wide rather than company-specific."),
-        sentiment: sentiment.describe("Net market impact for that ticker."),
-        title: z.string().describe("One neutral, specific sentence describing the event. No outlet names, no hype."),
-        summary: z.string().describe("Two sentences explaining what happened and why it moves the ticker."),
-        source_indexes: z
-          .array(z.number().int())
-          .describe("Indexes of the provided articles that report THIS event."),
-        source_angles: z
-          .array(sentiment)
-          .describe("Editorial angle of each article in source_indexes, in the same order."),
-      }),
-    )
-    .describe("Distinct real-world events. Omit anything not supported by the articles."),
-})
+export type ClusteredEvent = { event_key: string; event_label: string; ticker: string; is_macro: boolean; sentiment: Sentiment; title: string; summary: string; sources: Array<{ article: Article; angle: Sentiment }>; publishedAt: string }
+export type PipelineResult = { events: ClusteredEvent[]; classified: ClassifiedArticle[]; warnings: string[]; tokensUsed: number }
 
-export type ClusteredEvent = {
-  event_key: string
-  ticker: string
-  is_macro: boolean
-  sentiment: "bull" | "bear" | "neut"
-  title: string
-  summary: string
-  sources: Array<{ article: Article; angle: "bull" | "bear" | "neut" }>
-  publishedAt: string
+type Budget = { used: number; limit: number }
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const tokenEstimate = (value: string) => Math.ceil(value.length / 4)
+function parseJson(text: string) { const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""); const start = trimmed.indexOf("{"); const end = trimmed.lastIndexOf("}"); return JSON.parse(start >= 0 && end >= start ? trimmed.slice(start, end + 1) : trimmed) }
+function sentiment(value: unknown): Sentiment { const label = String(value ?? "").toLowerCase(); return ["bull", "bullish", "positive"].includes(label) ? "bull" : ["bear", "bearish", "negative"].includes(label) ? "bear" : "neut" }
+function normalize(value: string) { return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() }
+function words(value: string) { return new Set(normalize(value).split(" ").filter((word) => word.length > 2 && !stopWords.has(word))) }
+function overlap(left: string, right: string) { const a = words(left), b = words(right); let shared = 0; for (const word of a) if (b.has(word)) shared++; return shared / Math.max(1, Math.min(a.size, b.size)) }
+function slug(value: string) { return normalize(value).replace(/\s+/g, "-").slice(0, 80) }
+function windowBucket(date: string) { return Math.floor(new Date(date).getTime() / (INGEST.clusterWindowHours * 3_600_000)) }
+
+async function groqJson(model: string, system: string, prompt: string, budget: Budget): Promise<unknown> {
+  const estimated = tokenEstimate(system) + tokenEstimate(prompt) + 550
+  if (budget.used + estimated > budget.limit) throw new Error(`token budget exhausted (${budget.used}/${budget.limit})`)
+  const apiKey = process.env.GROQ_API_KEY
+  if (!apiKey) throw new Error("Missing GROQ_API_KEY")
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, temperature: model === CLASSIFICATION_MODEL ? 0 : 0.2, response_format: { type: "json_object" }, max_tokens: 650, messages: [{ role: "system", content: system }, { role: "user", content: prompt }] }), signal: AbortSignal.timeout(30_000) })
+    if (response.status === 429 && attempt < 3) { await sleep(Math.min(20_000, (Number(response.headers.get("retry-after")) || 2) * 1_000 * (attempt + 1))); continue }
+    if (!response.ok) throw new Error(`Groq ${response.status}: ${await response.text()}`)
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { total_tokens?: number } }
+    budget.used += data.usage?.total_tokens ?? estimated
+    return parseJson(data.choices?.[0]?.message?.content ?? "{}")
+  }
+  throw new Error("Groq rate limit retry budget exhausted")
 }
 
-/**
- * Groups raw articles into deduplicated events and labels market impact.
- * Returns [] when the batch yields nothing usable — callers must treat an
- * empty result as "no new stories", never as an error.
- */
-export async function clusterArticles(articles: Article[]): Promise<{ events: ClusteredEvent[]; warnings: string[] }> {
-  const warnings: string[] = []
-  if (articles.length === 0) return { events: [], warnings }
+function candidates(article: Article) {
+  const text = ` ${normalize(`${article.headline} ${article.summary}`)} `
+  return Object.entries(aliases).flatMap(([ticker, names]) => names.some((name) => text.includes(` ${normalize(name)} `)) ? [ticker] : [])
+}
+function catalogue(rows: Article[], candidateSets?: string[][]) { return rows.map((article, index) => `[${index}] candidates=${candidateSets?.[index]?.join(",") || "none"} ${article.headline}${article.summary ? ` — ${article.summary.slice(0, 350)}` : ""}`).join("\n") }
 
-  const catalogue = articles
-    .map((a, i) => `[${i}] (${a.outlet}${a.relatedSymbol ? `, re: ${a.relatedSymbol}` : ""}) ${a.headline}${a.summary ? ` — ${a.summary.slice(0, 220)}` : ""}`)
-    .join("\n")
-
-  const { object } = await generateObject({
-    model: groq(ANALYSIS_MODEL),
-    schema: clusterSchema,
-    // Deterministic-ish so the same batch produces the same event_keys.
-    temperature: 0.2,
-    system: [
-      "You are a financial news editor building an event-clustered feed.",
-      "Group articles that describe the SAME underlying real-world event.",
-      `Only emit an event when at least ${INGEST.minSourcesPerStory} distinct articles cover it.`,
-      "Never invent facts, tickers, outlets, or URLs. Use only the supplied articles.",
-      "Assign sentiment from the perspective of the affected ticker, not the tone of the writing.",
-      "Prefer specific, falsifiable titles over vague ones.",
-      `The ticker MUST be exactly one of: ${ALL_SYMBOLS.join(", ")}.`,
-      "For economy-wide events (rates, inflation, jobs, oil supply, dollar), set is_macro true and pick the closest macro symbol (SPX, US10Y, DXY, WTI, XAU, VIX).",
-    ].join("\n"),
-    prompt: `Cluster these ${articles.length} articles into distinct market events.\n\n${catalogue}`,
-  })
-
-  const allowed = new Set(ALL_SYMBOLS)
-  const events: ClusteredEvent[] = []
-  const usedKeys = new Set<string>()
-
-  for (const raw of object.events) {
-    const ticker = raw.ticker.trim().toUpperCase()
-    if (!allowed.has(ticker)) {
-      // stories.ticker has a NOT NULL FK to tickers.symbol — an unknown symbol
-      // would fail the insert, so drop the event rather than corrupt the batch.
-      warnings.push(`dropped event '${raw.event_key}': unknown ticker ${ticker}`)
-      continue
-    }
-
-    // Resolve indexes back to the real articles; ignore out-of-range hallucinations.
-    const seen = new Set<string>()
-    const sources = raw.source_indexes
-      .map((idx, position) => {
-        const article = articles[idx]
-        if (!article || seen.has(article.url)) return null
-        seen.add(article.url)
-        return { article, angle: raw.source_angles[position] ?? "neut" }
-      })
-      .filter((s): s is NonNullable<typeof s> => s !== null)
-      .slice(0, INGEST.maxSourcesPerStory)
-
-    if (sources.length < INGEST.minSourcesPerStory) {
-      warnings.push(`dropped event '${raw.event_key}': only ${sources.length} resolvable source(s)`)
-      continue
-    }
-
-    const key = raw.event_key
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 120)
-    if (!key || usedKeys.has(key)) {
-      warnings.push(`dropped event with duplicate/empty key '${raw.event_key}'`)
-      continue
-    }
-    usedKeys.add(key)
-
-    events.push({
-      event_key: key,
-      ticker,
-      is_macro: raw.is_macro,
-      sentiment: raw.sentiment,
-      title: raw.title.trim(),
-      summary: raw.summary.trim(),
-      sources,
-      // Story timestamp = earliest article in the cluster (when it broke).
-      publishedAt: sources.reduce(
-        (earliest, s) => (s.article.publishedAt < earliest ? s.article.publishedAt : earliest),
-        sources[0].article.publishedAt,
-      ),
-    })
+export async function classifyArticles(articles: Article[]): Promise<{ classified: ClassifiedArticle[]; warnings: string[]; tokensUsed: number }> {
+  const warnings: string[] = []; const classified: ClassifiedArticle[] = []; const budget: Budget = { used: 0, limit: INGEST.groqTokenBudget }
+  for (let start = 0; start < articles.length; start += INGEST.classificationBatchSize) {
+    const batch = articles.slice(start, start + INGEST.classificationBatchSize); const candidateSets = batch.map(candidates)
+    try {
+      const result = await groqJson(CLASSIFICATION_MODEL, `Return only JSON: {"articles":[{"index":0,"kind":"ticker|sector|none","value":"allowed value or none","confidence":0.0,"evidence":"exact short excerpt"}]}. For ticker, choose only from the article's candidate list; if it is empty, ticker is forbidden. Allowed sectors are tech, finance, energy, macro. Return none for ambiguity, unrelated coverage, or confidence below 0.78. Evidence must be a verbatim article excerpt supporting the decision.`, catalogue(batch, candidateSets), budget) as { articles?: unknown[] }
+      for (const item of Array.isArray(result.articles) ? result.articles : []) {
+        if (!item || typeof item !== "object") continue; const row = item as Record<string, unknown>; const index = Number(row.index); if (!Number.isInteger(index) || !batch[index]) continue
+        const kind = String(row.kind ?? "none").toLowerCase(), value = String(row.value ?? "").trim(), confidence = Number(row.confidence), evidence = String(row.evidence ?? "").trim(); const body = `${batch[index].headline} ${batch[index].summary}`.toLowerCase()
+        if (!Number.isFinite(confidence) || confidence < INGEST.minimumClassificationConfidence || !evidence || !body.includes(evidence.toLowerCase())) { warnings.push(`discarded low-confidence/unsupported classification for ${batch[index].url}`); continue }
+        if (kind === "ticker" && candidateSets[index].includes(value.toUpperCase()) && allowedSymbols.has(value.toUpperCase())) classified.push({ article: batch[index], classification: { kind: "ticker", value: value.toUpperCase(), confidence, evidence } })
+        else if (kind === "sector" && (sectors as readonly string[]).includes(value.toLowerCase())) classified.push({ article: batch[index], classification: { kind: "sector", value: value.toLowerCase() as Sector, confidence, evidence } })
+      }
+    } catch (error) { warnings.push(`classification batch failed: ${error instanceof Error ? error.message : String(error)}`) }
   }
+  return { classified, warnings, tokensUsed: budget.used }
+}
 
-  return { events, warnings }
+function lexicalClusters(items: ClassifiedArticle[]) {
+  const sorted = [...items].sort((a, b) => a.article.publishedAt.localeCompare(b.article.publishedAt)); const clusters: ClassifiedArticle[][] = []
+  for (const item of sorted) {
+    const target = `${item.classification.kind}:${item.classification.value}`; const text = `${item.article.headline} ${item.article.summary}`; let match: ClassifiedArticle[] | undefined
+    for (const cluster of clusters) { const first = cluster[0]; const sameTarget = `${first.classification.kind}:${first.classification.value}` === target; const withinWindow = Math.abs(new Date(first.article.publishedAt).getTime() - new Date(item.article.publishedAt).getTime()) <= INGEST.clusterWindowHours * 3_600_000; const similar = cluster.some((member) => overlap(text, `${member.article.headline} ${member.article.summary}`) >= 0.28); if (sameTarget && withinWindow && similar) { match = cluster; break } }
+    ;(match ?? clusters[clusters.push([]) - 1]).push(item)
+  }
+  return clusters.filter((cluster) => new Set(cluster.map((item) => item.article.outlet)).size >= INGEST.minSourcesPerStory)
+}
+
+async function analyzeCluster(cluster: ClassifiedArticle[], budget: Budget): Promise<ClusteredEvent> {
+  const classification = cluster[0].classification; const result = await groqJson(ANALYSIS_MODEL, `Return only JSON: {"event_label":"concise canonical event label","title":"neutral factual title","summary":"one or two sentences","sentiment":"bull|bear|neut","impact_reason":"why it matters to markets","source_angles":["bull|bear|neut"]}. All articles are already lexically pre-clustered, but reject any mismatch by returning event_label="none". Use only supplied sources.`, catalogue(cluster.map((item) => item.article)), budget) as Record<string, unknown>
+  const label = String(result.event_label ?? "").trim(); const title = String(result.title ?? "").trim(); const summary = String(result.summary ?? "").trim(); const impact = String(result.impact_reason ?? "").trim(); if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
+  const bucket = windowBucket(cluster[0].article.publishedAt); const isMacro = classification.kind === "sector"; const ticker = isMacro ? sectorTicker[classification.value] : classification.value; const sources = cluster.slice(0, INGEST.maxSourcesPerStory).map((item, index) => ({ article: item.article, angle: Array.isArray(result.source_angles) ? sentiment(result.source_angles[index]) : "neut" as Sentiment }))
+  return { event_key: slug(`${ticker}-${bucket}-${label}`), event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((earliest, source) => source.article.publishedAt < earliest ? source.article.publishedAt : earliest, sources[0].article.publishedAt) }
+}
+
+export async function clusterClassifiedArticles(items: ClassifiedArticle[], initialTokens = 0): Promise<{ events: ClusteredEvent[]; warnings: string[]; tokensUsed: number }> {
+  const warnings: string[] = []; const events: ClusteredEvent[] = []; const budget: Budget = { used: initialTokens, limit: INGEST.groqTokenBudget }; const keys = new Set<string>()
+  for (const cluster of lexicalClusters(items)) { try { const event = await analyzeCluster(cluster, budget); if (!keys.has(event.event_key)) { keys.add(event.event_key); events.push(event) } } catch (error) { warnings.push(`cluster skipped: ${error instanceof Error ? error.message : String(error)}`) } }
+  return { events, warnings, tokensUsed: budget.used }
 }

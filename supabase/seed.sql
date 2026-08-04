@@ -32,28 +32,28 @@ on conflict (symbol) do nothing;
 
 -- Stories are inserted with generated ids, then sources are joined back on ticker.
 with s as (
-  insert into public.stories (ticker, is_macro, sentiment, title, summary, published_at) values
-  ('NVDA', false, 'bull',
+  insert into public.stories (event_key, ticker, is_macro, sentiment, title, summary, published_at) values
+  ('seed-nvda-backlog', 'NVDA', false, 'bull',
    'Nvidia''s data-center backlog stretches into late 2026 as hyperscaler orders accelerate',
    'Three of the four largest cloud buyers have pulled forward Blackwell allocations, pushing Nvidia''s committed backlog beyond its own guidance window. Supply, not demand, remains the binding constraint.',
    now() - interval '42 minutes'),
-  ('TSLA', false, 'bear',
+  ('seed-tsla-europe-deliveries', 'TSLA', false, 'bear',
    'Tesla''s European deliveries slide for a fourth straight month as price cuts lose traction',
    'Registrations fell across Germany, France and the Nordics even after another round of discounting, raising questions about whether the demand problem is cyclical or structural.',
    now() - interval '2 hours 15 minutes'),
-  ('US10Y', true, 'neut',
+  ('seed-us10y-cut-odds', 'US10Y', true, 'neut',
    'Ten-year yield pushes back above 4.28% as traders trim March cut odds',
    'A firmer services print and hawkish commentary from two regional Fed presidents nudged the curve higher. Futures now imply fewer than two cuts for the year.',
    now() - interval '3 hours 50 minutes'),
-  ('GS', false, 'bull',
+  ('seed-gs-trading-quarter', 'GS', false, 'bull',
    'Goldman''s trading desk posts best quarter since 2021 on rates and credit volatility',
    'Fixed income revenue beat consensus by a wide margin, and management signalled the M&A pipeline is the fullest it has been in eight quarters.',
    now() - interval '5 hours 20 minutes'),
-  ('XOM', false, 'bear',
+  ('seed-xom-crude-margin', 'XOM', false, 'bear',
    'Exxon slips as crude breaks below $72 and refining margins compress',
    'Weaker Chinese import data and rising non-OPEC supply have knocked Brent lower for a third session, squeezing the downstream spread that carried earnings last quarter.',
    now() - interval '7 hours 5 minutes'),
-  ('AAPL', false, 'neut',
+  ('seed-aapl-services-growth', 'AAPL', false, 'neut',
    'Apple''s services growth offsets a softer iPhone cycle, leaving the bull case intact but unproven',
    'Analysts are split: the installed-base monetisation story keeps compounding, but unit refresh rates in Greater China remain the swing factor nobody can model cleanly.',
    now() - interval '9 hours 40 minutes')

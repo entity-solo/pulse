@@ -1,6 +1,6 @@
 import { INGEST, RSS_FEEDS } from "./config"
 
-export type Article = { headline: string; summary: string; outlet: string; url: string; publishedAt: string; relatedSymbol: null }
+export type Article = { headline: string; summary: string; outlet: string; url: string; publishedAt: string; relatedSymbol: string | null }
 type RssItem = Omit<Article, "outlet" | "relatedSymbol">
 
 function clean(value: string) {
@@ -17,7 +17,7 @@ function date(value: string) { const result = new Date(value); const hours = (Da
 function parse(xml: string): RssItem[] {
   return [...xml.matchAll(/<(item|entry)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/gi)].flatMap((match) => { const atom = match[1].toLowerCase() === "entry"; const headline = tag(match[2], "title"); const publishedAt = date(tag(match[2], "pubDate") || tag(match[2], "published") || tag(match[2], "updated")); const articleUrl = url(link(match[2], atom)); const summary = (tag(match[2], "description") || tag(match[2], "summary") || tag(match[2], "content")).slice(0, 600); return headline && articleUrl && publishedAt ? [{ headline, url: articleUrl, publishedAt, summary }] : [] })
 }
-async function fetchFeed(feed: (typeof RSS_FEEDS)[number]) { const response = await fetch(feed.url, { cache: "no-store", headers: { Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml", "User-Agent": "Pulse/0.1 news aggregator" }, signal: AbortSignal.timeout(15_000) }); if (!response.ok) throw new Error(`${response.status} ${response.statusText}`); return parse(await response.text()).map((article) => ({ ...article, outlet: feed.outlet, relatedSymbol: null })) }
+async function fetchFeed(feed: (typeof RSS_FEEDS)[number]) { const response = await fetch(feed.url, { cache: "no-store", headers: { Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml", "User-Agent": "Pulse/0.1 news aggregator" }, signal: AbortSignal.timeout(15_000) }); if (!response.ok) throw new Error(`${response.status} ${response.statusText}`); return parse(await response.text()).map((article) => ({ ...article, outlet: feed.outlet, relatedSymbol: null as string | null })) }
 
 /** Pulls major-outlet RSS feeds and returns a de-duplicated, recent batch. */
 export async function fetchArticles(knownUrls: Set<string>): Promise<{ articles: Article[]; errors: string[] }> {
