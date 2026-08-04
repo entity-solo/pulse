@@ -28,13 +28,13 @@ function overlap(left: string, right: string) { const a = words(left), b = words
 function slug(value: string) { return normalize(value).replace(/\s+/g, "-").slice(0, 80) }
 function windowBucket(date: string) { return Math.floor(new Date(date).getTime() / (INGEST.clusterWindowHours * 3_600_000)) }
 
-async function groqJson(model: string, system: string, prompt: string, budget: Budget): Promise<unknown> {
-  const estimated = tokenEstimate(system) + tokenEstimate(prompt) + 550
+async function groqJson(model: string, system: string, prompt: string, budget: Budget, maxTokens: number): Promise<unknown> {
+  const estimated = tokenEstimate(system) + tokenEstimate(prompt) + maxTokens
   if (budget.used + estimated > budget.limit) throw new Error(`token budget exhausted (${budget.used}/${budget.limit})`)
   const apiKey = process.env.GROQ_API_KEY
   if (!apiKey) throw new Error("Missing GROQ_API_KEY")
   for (let attempt = 0; attempt < 4; attempt++) {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, temperature: model === CLASSIFICATION_MODEL ? 0 : 0.2, response_format: { type: "json_object" }, max_tokens: 650, messages: [{ role: "system", content: system }, { role: "user", content: prompt }] }), signal: AbortSignal.timeout(30_000) })
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, temperature: model === CLASSIFICATION_MODEL ? 0 : 0.2, response_format: { type: "json_object" }, max_tokens: maxTokens, messages: [{ role: "system", content: system }, { role: "user", content: prompt }] }), signal: AbortSignal.timeout(30_000) })
     if (response.status === 429 && attempt < 3) { await sleep(Math.min(20_000, (Number(response.headers.get("retry-after")) || 2) * 1_000 * (attempt + 1))); continue }
     if (!response.ok) throw new Error(`Groq ${response.status}: ${await response.text()}`)
     const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { total_tokens?: number } }
@@ -51,7 +51,7 @@ function candidates(article: Article) {
 function catalogue(rows: Article[], candidateSets?: string[][]) { return rows.map((article, index) => `[${index}] candidates=${candidateSets?.[index]?.join(",") || "none"} ${article.headline}${article.summary ? ` — ${article.summary.slice(0, 350)}` : ""}`).join("\n") }
 
 export async function classifyArticles(articles: Article[]): Promise<{ classified: ClassifiedArticle[]; warnings: string[]; tokensUsed: number }> {
-  const warnings: string[] = []; const classified: ClassifiedArticle[] = []; const budget: Budget = { used: 0, limit: INGEST.groqTokenBudget }
+  const warnings: string[] = []; const classified: ClassifiedArticle[] = []; const budget: Budget = { used: 0, limit: INGEST.classificationTokenBudget }
   for (let start = 0; start < articles.length; start += INGEST.classificationBatchSize) {
     const batch = articles.slice(start, start + INGEST.classificationBatchSize); const candidateSets = batch.map(candidates)
     try {

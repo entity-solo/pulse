@@ -71,13 +71,23 @@ export const INGEST = {
   /** Maximum fresh RSS articles considered per run. */
   maxArticlesPerRun: 40,
   /** Classification batches stay below free-tier token pressure. */
-  classificationBatchSize: 15,
+  classificationBatchSize: 5,
   /** Cache every RSS article/classification for this long. */
   articleCacheDays: 7,
   /** Candidate articles can cluster across this rolling window. */
   clusterWindowHours: 36,
-  /** Per-run Groq guardrails (estimated plus returned usage). */
-  groqTokenBudget: 9_000,
+  /**
+   * Per-run Groq guardrails (estimated plus returned usage). Classification
+   * and analysis hold INDEPENDENT pools: sharing one ceiling let a busy
+   * classification pass consume the whole budget and starve analysis, so no
+   * stories were ever produced on high-volume runs.
+   */
+  classificationTokenBudget: 9_000,
+  analysisTokenBudget: 9_000,
+  /** Output ceiling per classification batch; must fit every batch item. */
+  classificationMaxTokens: 2_000,
+  /** Output ceiling for a single cluster analysis. */
+  analysisMaxTokens: 650,
   minimumClassificationConfidence: 0.78,
   /** Articles older than this are ignored. */
   articleMaxAgeHours: 24,
