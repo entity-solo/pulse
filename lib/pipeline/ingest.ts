@@ -123,7 +123,10 @@ export async function runAnalyzePipeline(): Promise<RunResult> {
   try {
     const since = new Date(Date.now() - INGEST.clusterWindowHours * 3_600_000).toISOString()
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 3_600_000).toISOString()
+    const tQueryStart = Date.now()
     const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classified_at", null).or(`classification_attempted_at.is.null,classification_attempted_at.lt.${twentyFourHoursAgo}`).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(60)
+    const queryMs = Date.now() - tQueryStart
+    console.log(`[timing] Query unclassified articles from cache: ${queryMs}ms (${unclassifiedRows?.length ?? 0} rows retrieved)`)
 
     const toClassify: Article[] = ((unclassifiedRows ?? []) as any[]).flatMap((row) => passesPreFilters(row.headline, row.summary || "", row.url) ? [{ url: row.url, headline: row.headline, summary: row.summary, outlet: row.outlet, publishedAt: row.published_at, relatedSymbol: null }] : [])
 
@@ -154,6 +157,7 @@ export async function runAnalyzePipeline(): Promise<RunResult> {
 
   let storiesUpserted = 0; let sourcesUpserted = 0
   for (const event of events) try {
+    const tUpsertStart = Date.now()
     event.event_key = deriveDeterministicEventKey(event.ticker, event.sources.map((s) => s.article.url))
     const eventKey = await resolveRecentEventKey(db, event)
     const { data: story, error: storyError } = await db.from("stories").upsert({ event_key: eventKey, ticker: event.ticker, is_macro: event.is_macro, sentiment: event.sentiment, title: event.title, summary: event.summary, published_at: event.publishedAt }, { onConflict: "event_key" }).select("id").single()
@@ -162,6 +166,8 @@ export async function runAnalyzePipeline(): Promise<RunResult> {
     const { error: sourceError, count } = await db.from("story_sources").upsert(event.sources.map((source, index) => ({ story_id: story.id, outlet: source.article.outlet, headline: source.article.headline, excerpt: source.article.summary || source.article.headline, angle: source.angle, url: source.article.url, display_order: index + 1 })), { onConflict: "story_id,url", count: "exact" })
     if (sourceError) throw sourceError
     sourcesUpserted += count ?? event.sources.length
+    const upsertMs = Date.now() - tUpsertStart
+    console.log(`[timing] DB upsert story (${event.ticker} - ${eventKey}): ${upsertMs}ms`)
   } catch (error) {
     errors.push(`event upsert: ${error instanceof Error ? error.message : String(error)}`)
   }

@@ -467,7 +467,7 @@ function sentiment(value: unknown): Sentiment { const label = String(value ?? ""
 
 async function analyzeCluster(groqKey: string, cluster: ClassifiedArticle[], budget: Budget): Promise<ClusteredEvent> {
   const classification = cluster[0].classification
-  const result = await groqJson(groqKey, "openai/gpt-oss-120b", `Return only JSON: {"event_label":"concise canonical event label","title":"neutral factual title","summary":"one or two sentences","sentiment":"bull|bear|neut","impact_reason":"why it matters to markets","source_angles":["bull|bear|neut"]}. All articles are already lexically pre-clustered, but reject any mismatch by returning event_label="none". Use only supplied sources.`, catalogue(cluster.map((item) => item.article)), budget, CONFIG.analysisMaxTokens) as Record<string, unknown>
+  const result = await groqJson(groqKey, "llama-3.3-70b-versatile", `Return only JSON: {"event_label":"concise canonical event label","title":"neutral factual title","summary":"one or two sentences","sentiment":"bull|bear|neut","impact_reason":"why it matters to markets","source_angles":["bull|bear|neut"]}. All articles are already lexically pre-clustered, but reject any mismatch by returning event_label="none". Use only supplied sources.`, catalogue(cluster.map((item) => item.article)), budget, CONFIG.analysisMaxTokens) as Record<string, unknown>
   const label = String(result.event_label ?? "").trim(), title = String(result.title ?? "").trim(), summary = String(result.summary ?? "").trim(), impact = String(result.impact_reason ?? "").trim()
   if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
   const isMacro = classification.kind === "sector"

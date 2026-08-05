@@ -62,8 +62,11 @@ export async function classifyArticles(articles: Article[]): Promise<{ classifie
   const budget: Budget = { used: 0, limit: INGEST.classificationTokenBudget }
   for (let start = 0; start < articles.length; start += INGEST.classificationBatchSize) {
     const batch = articles.slice(start, start + INGEST.classificationBatchSize); const candidateSets = batch.map(candidates)
+    const tBatchStart = Date.now()
     try {
       const result = await groqJson(CLASSIFICATION_MODEL, `Return only JSON: {"articles":[{"index":0,"kind":"ticker|sector|none","value":"allowed value or none","confidence":0.0,"evidence":"exact short excerpt"}]}. For ticker, choose only from the article's candidate list; if it is empty, ticker is forbidden. Allowed sectors are tech, finance, energy, macro. Return none for ambiguity, unrelated coverage, or confidence below 0.78. Evidence must be a verbatim article excerpt supporting the decision.`, catalogue(batch, candidateSets), budget, INGEST.classificationMaxTokens) as { articles?: unknown[] }
+      const batchMs = Date.now() - tBatchStart
+      console.log(`[timing] Groq classification batch (size ${batch.length}): ${batchMs}ms`)
       for (const item of Array.isArray(result.articles) ? result.articles : []) {
         if (!item || typeof item !== "object") continue; const row = item as Record<string, unknown>; const index = Number(row.index); if (!Number.isInteger(index) || !batch[index]) continue
         const kind = String(row.kind ?? "none").toLowerCase(), value = String(row.value ?? "").trim(), confidence = Number(row.confidence), evidence = String(row.evidence ?? "").trim(); const body = `${batch[index].headline} ${batch[index].summary}`.toLowerCase()
@@ -71,7 +74,11 @@ export async function classifyArticles(articles: Article[]): Promise<{ classifie
         if (kind === "ticker" && candidateSets[index].includes(value.toUpperCase()) && allowedSymbols.has(value.toUpperCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "ticker", value: value.toUpperCase(), confidence, evidence } })
         else if (kind === "sector" && (sectors as readonly string[]).includes(value.toLowerCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "sector", value: value.toLowerCase() as Sector, confidence, evidence } })
       }
-    } catch (error) { warnings.push(`classification batch failed: ${error instanceof Error ? error.message : String(error)}`) }
+    } catch (error) {
+      const batchMs = Date.now() - tBatchStart
+      console.log(`[timing] Groq classification batch (size ${batch.length}) failed after: ${batchMs}ms`)
+      warnings.push(`classification batch failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
   return { classified: Array.from(classifiedMap.values()), warnings, tokensUsed: budget.used }
 }
@@ -92,15 +99,30 @@ function lexicalClusters(items: ClassifiedArticle[]) {
 }
 
 async function analyzeCluster(cluster: ClassifiedArticle[], budget: Budget): Promise<ClusteredEvent> {
-  const classification = cluster[0].classification as Exclude<Classification, { kind: "none" }>; const result = await groqJson(ANALYSIS_MODEL, `Return only JSON: {"event_label":"concise canonical event label","title":"neutral factual title","summary":"one or two sentences","sentiment":"bull|bear|neut","impact_reason":"why it matters to markets","source_angles":["bull|bear|neut"]}. All articles are already lexically pre-clustered, but reject any mismatch by returning event_label="none". Use only supplied sources.`, catalogue(cluster.map((item) => item.article)), budget, INGEST.analysisMaxTokens) as Record<string, unknown>
-  const label = String(result.event_label ?? "").trim(); const title = String(result.title ?? "").trim(); const summary = String(result.summary ?? "").trim(); const impact = String(result.impact_reason ?? "").trim(); if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
-  const bucket = windowBucket(cluster[0].article.publishedAt); const isMacro = classification.kind === "sector"; const ticker = isMacro ? sectorTicker[classification.value] : classification.value; const sources = cluster.slice(0, INGEST.maxSourcesPerStory).map((item, index) => ({ article: item.article, angle: Array.isArray(result.source_angles) ? sentiment(result.source_angles[index]) : "neut" as Sentiment }))
-  return { event_key: slug(`${ticker}-${bucket}-${label}`), event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((earliest, source) => source.article.publishedAt < earliest ? source.article.publishedAt : earliest, sources[0].article.publishedAt) }
+  const classification = cluster[0].classification as Exclude<Classification, { kind: "none" }>;
+  const tAnalysisStart = Date.now()
+  try {
+    const result = await groqJson(ANALYSIS_MODEL, `Return only JSON: {"event_label":"concise canonical event label","title":"neutral factual title","summary":"one or two sentences","sentiment":"bull|bear|neut","impact_reason":"why it matters to markets","source_angles":["bull|bear|neut"]}. All articles are already lexically pre-clustered, but reject any mismatch by returning event_label="none". Use only supplied sources.`, catalogue(cluster.map((item) => item.article)), budget, INGEST.analysisMaxTokens) as Record<string, unknown>
+    const analysisMs = Date.now() - tAnalysisStart
+    const label = String(result.event_label ?? "").trim(); const title = String(result.title ?? "").trim(); const summary = String(result.summary ?? "").trim(); const impact = String(result.impact_reason ?? "").trim(); if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
+    console.log(`[timing] Groq analysis call (${classification.value} - "${label}"): ${analysisMs}ms`)
+    const bucket = windowBucket(cluster[0].article.publishedAt); const isMacro = classification.kind === "sector"; const ticker = isMacro ? sectorTicker[classification.value] : classification.value; const sources = cluster.slice(0, INGEST.maxSourcesPerStory).map((item, index) => ({ article: item.article, angle: Array.isArray(result.source_angles) ? sentiment(result.source_angles[index]) : "neut" as Sentiment }))
+    return { event_key: slug(`${ticker}-${bucket}-${label}`), event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((earliest, source) => source.article.publishedAt < earliest ? source.article.publishedAt : earliest, sources[0].article.publishedAt) }
+  } catch (error) {
+    const analysisMs = Date.now() - tAnalysisStart
+    console.log(`[timing] Groq analysis call (${classification.value}): failed/skipped after ${analysisMs}ms`)
+    throw error
+  }
 }
 
 export async function clusterClassifiedArticles(items: ClassifiedArticle[]): Promise<{ events: ClusteredEvent[]; warnings: string[]; tokensUsed: number }> {
   const warnings: string[] = []; const rawEvents: ClusteredEvent[] = []; const budget: Budget = { used: 0, limit: INGEST.analysisTokenBudget }
-  for (const cluster of lexicalClusters(items)) { try { const event = await analyzeCluster(cluster, budget); rawEvents.push(event) } catch (error) { warnings.push(`cluster skipped: ${error instanceof Error ? error.message : String(error)}`) } }
+  const tClusterStart = Date.now()
+  const clusters = lexicalClusters(items)
+  const clusterMs = Date.now() - tClusterStart
+  console.log(`[timing] Clustering step: ${clusterMs}ms (formed ${clusters.length} clusters from ${items.length} classified items)`)
+
+  for (const cluster of clusters) { try { const event = await analyzeCluster(cluster, budget); rawEvents.push(event) } catch (error) { warnings.push(`cluster skipped: ${error instanceof Error ? error.message : String(error)}`) } }
   const events: ClusteredEvent[] = []
   for (const event of rawEvents) {
     const existing = events.find((e) => e.ticker === event.ticker && (e.event_key === event.event_key || titleSimilarity(e.title, event.title) >= 0.75))
