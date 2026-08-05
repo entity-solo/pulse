@@ -312,15 +312,17 @@ class TokenRateLimiter {
   }
 }
 
-const groqLimiter = new TokenRateLimiter(5500, 60_000)
+const classificationLimiter = new TokenRateLimiter(5500, 60_000)
+const analysisLimiter = new TokenRateLimiter(11000, 60_000)
 
 async function groqJson(apiKey: string, model: string, system: string, prompt: string, budget: Budget, maxTokens: number, articleCount = 0): Promise<unknown> {
   const estimated = articleCount > 0 ? (articleCount * 300) + 600 : Math.ceil((system.length + prompt.length) / 4) + maxTokens
   if (budget.used + estimated > budget.limit) throw new Error(`token budget exhausted (${budget.used}/${budget.limit})`)
 
-  const windowBefore = groqLimiter.getWindowTokens()
-  console.log(`[Groq Limiter] Current window total: ${windowBefore} tokens. Request estimated: ${estimated} tokens.`)
-  await groqLimiter.acquire(estimated)
+  const limiter = model === "llama-3.1-8b-instant" ? classificationLimiter : analysisLimiter
+  const windowBefore = limiter.getWindowTokens()
+  console.log(`[Groq Limiter - ${model}] Current window total: ${windowBefore} tokens. Request estimated: ${estimated} tokens.`)
+  await limiter.acquire(estimated)
 
   const maxRetries = 5
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -352,8 +354,8 @@ async function groqJson(apiKey: string, model: string, system: string, prompt: s
       const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { total_tokens?: number } }
       const actualTokens = data.usage?.total_tokens ?? estimated
       budget.used += actualTokens
-      groqLimiter.recordUsage(actualTokens)
-      console.log(`[Groq Limiter] Request completed. Estimated: ${estimated}, Actual: ${actualTokens}. New 60s window total: ${groqLimiter.getWindowTokens()} tokens.`)
+      limiter.recordUsage(actualTokens)
+      console.log(`[Groq Limiter - ${model}] Request completed. Estimated: ${estimated}, Actual: ${actualTokens}. New 60s window total: ${limiter.getWindowTokens()} tokens.`)
       return parseJson(data.choices?.[0]?.message?.content ?? "{}")
     } catch (err: any) {
       if (err?.name === "AbortError" || err?.message?.includes("aborted")) {

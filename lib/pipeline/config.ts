@@ -38,7 +38,7 @@ export const MACRO_SECTORS: Sector[] = ["macro", "index", "commodity"]
 export const CLASSIFICATION_MODEL = "llama-3.1-8b-instant"
 
 /** Groq model used for final market-impact analysis of confirmed clusters. */
-export const ANALYSIS_MODEL = "llama-3.1-8b-instant"
+export const ANALYSIS_MODEL = "llama-3.3-70b-versatile"
 
 /** Public RSS feeds; an unavailable publisher only degrades that one source. */
 export const RSS_FEEDS = [
