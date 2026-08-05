@@ -1,8 +1,8 @@
 import { ALL_SYMBOLS, ANALYSIS_MODEL, CLASSIFICATION_MODEL, INGEST } from "./config"
 import type { Article } from "./news"
-import { TOP100_ALIASES } from "./sp500"
+import { defaultRegistry } from "./providers/registry"
 
-const allowedSymbols = new Set<string>(ALL_SYMBOLS)
+const getAllowedSymbols = () => new Set<string>([...ALL_SYMBOLS, ...defaultRegistry.getAllSymbols()])
 const sectors = ["tech", "finance", "energy", "macro"] as const
 type Sector = (typeof sectors)[number]
 type Sentiment = "bull" | "bear" | "neut"
@@ -13,7 +13,6 @@ export type Classification =
 
 export type ClassifiedArticle = { article: Article; classification: Classification }
 
-const aliases: Record<string, readonly string[]> = TOP100_ALIASES
 const sectorTicker: Record<Sector, string> = { tech: "NDX", finance: "SPX", energy: "WTI", macro: "SPX" }
 const stopWords = new Set(["the", "and", "for", "with", "from", "after", "into", "over", "that", "this", "will", "stock", "shares", "market", "company", "reports", "quarterly", "earnings", "says", "said"])
 
@@ -50,9 +49,8 @@ async function groqJson(model: string, system: string, prompt: string, budget: B
   throw new Error("Groq rate limit retry budget exhausted")
 }
 
-function candidates(article: Article) {
-  const text = ` ${normalize(`${article.headline} ${article.summary}`)} `
-  return Object.entries(aliases).flatMap(([ticker, names]) => names.some((name) => text.includes(` ${normalize(name)} `)) ? [ticker] : [])
+function candidates(article: Article): string[] {
+  return defaultRegistry.getCandidates(article.headline, article.summary || "")
 }
 function catalogue(rows: Article[], candidateSets?: string[][]) { return rows.map((article, index) => `[${index}] candidates=${candidateSets?.[index]?.join(",") || "none"} ${article.headline}${article.summary ? ` — ${article.summary.slice(0, 350)}` : ""}`).join("\n") }
 
@@ -71,7 +69,7 @@ export async function classifyArticles(articles: Article[]): Promise<{ classifie
         if (!item || typeof item !== "object") continue; const row = item as Record<string, unknown>; const index = Number(row.index); if (!Number.isInteger(index) || !batch[index]) continue
         const kind = String(row.kind ?? "none").toLowerCase(), value = String(row.value ?? "").trim(), confidence = Number(row.confidence), evidence = String(row.evidence ?? "").trim(); const body = `${batch[index].headline} ${batch[index].summary}`.toLowerCase()
         if (!Number.isFinite(confidence) || confidence < INGEST.minimumClassificationConfidence || !evidence || !body.includes(evidence.toLowerCase())) { warnings.push(`discarded low-confidence/unsupported classification for ${batch[index].url}`); continue }
-        if (kind === "ticker" && candidateSets[index].includes(value.toUpperCase()) && allowedSymbols.has(value.toUpperCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "ticker", value: value.toUpperCase(), confidence, evidence } })
+        if (kind === "ticker" && candidateSets[index].includes(value.toUpperCase()) && getAllowedSymbols().has(value.toUpperCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "ticker", value: value.toUpperCase(), confidence, evidence } })
         else if (kind === "sector" && (sectors as readonly string[]).includes(value.toLowerCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "sector", value: value.toLowerCase() as Sector, confidence, evidence } })
       }
     } catch (error) {
