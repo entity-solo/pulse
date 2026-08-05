@@ -35,7 +35,7 @@ export const ALL_SYMBOLS = [...EQUITY_SYMBOLS, ...Object.keys(MACRO_SYMBOL_MAP)]
 export const MACRO_SECTORS: Sector[] = ["macro", "index", "commodity"]
 
 /** Fast Groq model used to classify articles and confirm event clusters. */
-export const CLASSIFICATION_MODEL = "openai/gpt-oss-20b"
+export const CLASSIFICATION_MODEL = "llama-3.1-8b-instant"
 
 /** Groq model used for final market-impact analysis of confirmed clusters. */
 export const ANALYSIS_MODEL = "llama-3.3-70b-versatile"
@@ -64,6 +64,9 @@ export const INGEST = {
   articleCacheDays: 7,
   /** Candidate articles can cluster across this rolling window. */
   clusterWindowHours: 36,
+  /** Similarity threshold tuning for multi-source event clustering. */
+  clusterMinSharedWords: 2,
+  clusterMinOverlap: 0.25,
   /**
    * Per-run Groq guardrails (estimated plus returned usage). Classification
    * and analysis hold INDEPENDENT pools: sharing one ceiling let a busy

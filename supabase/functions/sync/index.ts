@@ -197,6 +197,8 @@ const CONFIG = {
   minimumClassificationConfidence: 0.78,
   articleMaxAgeHours: 24,
   clusterWindowHours: 36,
+  clusterMinSharedWords: 2,
+  clusterMinOverlap: 0.25,
   minSourcesPerStory: 1,
   maxSourcesPerStory: 4,
 } as const
@@ -239,7 +241,7 @@ function normalize(value: string) { return value.toLowerCase().replace(/[^a-z0-9
 function words(value: string) { return new Set(normalize(value).split(" ").filter((w) => w.length > 2 && !STOP_WORDS.has(w))) }
 function sharedWordsCount(left: string, right: string) { const a = words(left), b = words(right); let shared = 0; for (const w of a) if (b.has(w)) shared++; return shared }
 function overlap(left: string, right: string) { const a = words(left), b = words(right); if (!a.size || !b.size) return 0; let shared = 0; for (const w of a) if (b.has(w)) shared++; return shared / Math.max(1, Math.min(a.size, b.size)) }
-function isLexicallySimilar(left: string, right: string) { return sharedWordsCount(left, right) >= 3 && overlap(left, right) >= 0.40 }
+function isLexicallySimilar(left: string, right: string) { return sharedWordsCount(left, right) >= CONFIG.clusterMinSharedWords && overlap(left, right) >= CONFIG.clusterMinOverlap }
 function titleSimilarity(left: string, right: string) { return overlap(left, right) }
 function hash(value: string) { let h = 2_166_136_261; for (let i = 0; i < value.length; i++) { h ^= value.charCodeAt(i); h = Math.imul(h, 16_777_619) } return (h >>> 0).toString(16) }
 function articleHash(a: Article) { return hash(`${a.url}\n${a.headline}\n${a.summary}`) }
@@ -444,19 +446,31 @@ async function classify(groqKey: string, rows: Article[], budget: Budget, warnin
   return Array.from(classifiedMap.values())
 }
 
+function getCanonicalClassification(cluster: ClassifiedArticle[]): Classification {
+  const tickers = cluster.filter((item) => item.classification.kind === "ticker")
+  if (tickers.length) {
+    tickers.sort((a, b) => (b.classification.confidence ?? 0) - (a.classification.confidence ?? 0))
+    return tickers[0].classification
+  }
+  const sectors = cluster.filter((item) => item.classification.kind === "sector")
+  sectors.sort((a, b) => (b.classification.confidence ?? 0) - (a.classification.confidence ?? 0))
+  return sectors[0]?.classification ?? { kind: "sector", value: "macro", confidence: 1, evidence: "default" }
+}
+
 function lexicalClusters(items: ClassifiedArticle[]) {
   const sorted = [...items].sort((a, b) => a.article.publishedAt.localeCompare(b.article.publishedAt))
   const clusters: ClassifiedArticle[][] = []
   for (const item of sorted) {
-    const target = `${item.classification.kind}:${item.classification.value}`
+    if (item.classification.kind === "none") continue
     const text = `${item.article.headline} ${item.article.summary}`
     let match: ClassifiedArticle[] | undefined
     for (const cluster of clusters) {
       const first = cluster[0]
-      const sameTarget = `${first.classification.kind}:${first.classification.value}` === target
+      if (first.classification.kind === "none") continue
       const withinWindow = Math.abs(new Date(first.article.publishedAt).getTime() - new Date(item.article.publishedAt).getTime()) <= CONFIG.clusterWindowHours * 3_600_000
+      if (!withinWindow) continue
       const similar = cluster.some((member) => isLexicallySimilar(text, `${member.article.headline} ${member.article.summary}`))
-      if (sameTarget && withinWindow && similar) { match = cluster; break }
+      if (similar) { match = cluster; break }
     }
     ;(match ?? clusters[clusters.push([]) - 1]).push(item)
   }
@@ -466,7 +480,7 @@ function lexicalClusters(items: ClassifiedArticle[]) {
 function sentiment(value: unknown): Sentiment { const label = String(value ?? "").toLowerCase(); return ["bull", "bullish", "positive"].includes(label) ? "bull" : ["bear", "bearish", "negative"].includes(label) ? "bear" : "neut" }
 
 async function analyzeCluster(groqKey: string, cluster: ClassifiedArticle[], budget: Budget): Promise<ClusteredEvent> {
-  const classification = cluster[0].classification
+  const classification = getCanonicalClassification(cluster)
   const result = await groqJson(groqKey, "llama-3.3-70b-versatile", `Return only JSON: {"event_label":"concise canonical event label","title":"neutral factual title","summary":"one or two sentences","sentiment":"bull|bear|neut","impact_reason":"why it matters to markets","source_angles":["bull|bear|neut"]}. All articles are already lexically pre-clustered, but reject any mismatch by returning event_label="none". Use only supplied sources.`, catalogue(cluster.map((item) => item.article)), budget, CONFIG.analysisMaxTokens) as Record<string, unknown>
   const label = String(result.event_label ?? "").trim(), title = String(result.title ?? "").trim(), summary = String(result.summary ?? "").trim(), impact = String(result.impact_reason ?? "").trim()
   if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
@@ -477,7 +491,7 @@ async function analyzeCluster(groqKey: string, cluster: ClassifiedArticle[], bud
   return { event_key, event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((earliest, source) => source.article.publishedAt < earliest ? source.article.publishedAt : earliest, sources[0].article.publishedAt) }
 }
 
-export async function clusterClassifiedArticles(groqKey: string, items: ClassifiedArticle[]): Promise<{ events: ClusteredEvent[]; warnings: string[]; tokensUsed: number }> {
+async function clusterClassifiedArticles(groqKey: string, items: ClassifiedArticle[]): Promise<{ events: ClusteredEvent[]; warnings: string[]; tokensUsed: number }> {
   const warnings: string[] = []; const rawEvents: ClusteredEvent[] = []; const budget: Budget = { used: 0, limit: CONFIG.analysisTokenBudget }
   for (const cluster of lexicalClusters(items)) {
     try {
@@ -489,11 +503,18 @@ export async function clusterClassifiedArticles(groqKey: string, items: Classifi
   }
   const events: ClusteredEvent[] = []
   for (const event of rawEvents) {
-    const existing = events.find((e) => e.ticker === event.ticker && (e.event_key === event.event_key || titleSimilarity(e.title, event.title) >= 0.75))
+    const existing = events.find((e) =>
+      (e.ticker === event.ticker || e.is_macro || event.is_macro) &&
+      (e.event_key === event.event_key || titleSimilarity(e.title, event.title) >= 0.60)
+    )
     if (existing) {
       const urlSeen = new Set<string>(existing.sources.map((s) => s.article.url))
       const additional = event.sources.filter((s) => !urlSeen.has(s.article.url))
       existing.sources = [...existing.sources, ...additional].slice(0, CONFIG.maxSourcesPerStory)
+      if (existing.is_macro && !event.is_macro) {
+        existing.ticker = event.ticker
+        existing.is_macro = false
+      }
     } else {
       events.push(event)
     }

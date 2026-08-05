@@ -28,7 +28,9 @@ function normalize(value: string) { return value.toLowerCase().replace(/[^a-z0-9
 function words(value: string) { return new Set(normalize(value).split(" ").filter((word) => word.length > 2 && !stopWords.has(word))) }
 function sharedWordsCount(left: string, right: string) { const a = words(left), b = words(right); let shared = 0; for (const word of a) if (b.has(word)) shared++; return shared }
 function overlap(left: string, right: string) { const a = words(left), b = words(right); if (!a.size || !b.size) return 0; let shared = 0; for (const w of a) if (b.has(w)) shared++; return shared / Math.max(1, Math.min(a.size, b.size)) }
-function isLexicallySimilar(left: string, right: string) { return sharedWordsCount(left, right) >= 3 && overlap(left, right) >= 0.40 }
+function isLexicallySimilar(left: string, right: string) {
+  return sharedWordsCount(left, right) >= INGEST.clusterMinSharedWords && overlap(left, right) >= INGEST.clusterMinOverlap
+}
 function titleSimilarity(left: string, right: string) { return overlap(left, right) }
 function slug(value: string) { return normalize(value).replace(/\s+/g, "-").slice(0, 80) }
 function windowBucket(date: string) { return Math.floor(new Date(date).getTime() / (INGEST.clusterWindowHours * 3_600_000)) }
@@ -81,15 +83,29 @@ export async function classifyArticles(articles: Article[]): Promise<{ classifie
   return { classified: Array.from(classifiedMap.values()), warnings, tokensUsed: budget.used }
 }
 
+function getCanonicalClassification(cluster: ClassifiedArticle[]): Exclude<Classification, { kind: "none" }> {
+  const tickers = cluster.filter((item) => item.classification.kind === "ticker")
+  if (tickers.length) {
+    tickers.sort((a, b) => ((b.classification as any).confidence ?? 0) - ((a.classification as any).confidence ?? 0))
+    return tickers[0].classification as Exclude<Classification, { kind: "none" }>
+  }
+  const sectors = cluster.filter((item) => item.classification.kind === "sector")
+  sectors.sort((a, b) => ((b.classification as any).confidence ?? 0) - ((a.classification as any).confidence ?? 0))
+  return (sectors[0]?.classification ?? { kind: "sector", value: "macro", confidence: 1, evidence: "default" }) as Exclude<Classification, { kind: "none" }>
+}
+
 function lexicalClusters(items: ClassifiedArticle[]) {
   const sorted = [...items].sort((a, b) => a.article.publishedAt.localeCompare(b.article.publishedAt)); const clusters: ClassifiedArticle[][] = []
   for (const item of sorted) {
     if (item.classification.kind === "none") continue
-    const target = `${item.classification.kind}:${item.classification.value}`; const text = `${item.article.headline} ${item.article.summary}`; let match: ClassifiedArticle[] | undefined
+    const text = `${item.article.headline} ${item.article.summary}`; let match: ClassifiedArticle[] | undefined
     for (const cluster of clusters) {
       const first = cluster[0]
       if (first.classification.kind === "none") continue
-      const sameTarget = `${first.classification.kind}:${first.classification.value}` === target; const withinWindow = Math.abs(new Date(first.article.publishedAt).getTime() - new Date(item.article.publishedAt).getTime()) <= INGEST.clusterWindowHours * 3_600_000; const similar = cluster.some((member) => isLexicallySimilar(text, `${member.article.headline} ${member.article.summary}`)); if (sameTarget && withinWindow && similar) { match = cluster; break }
+      const withinWindow = Math.abs(new Date(first.article.publishedAt).getTime() - new Date(item.article.publishedAt).getTime()) <= INGEST.clusterWindowHours * 3_600_000
+      if (!withinWindow) continue
+      const similar = cluster.some((member) => isLexicallySimilar(text, `${member.article.headline} ${member.article.summary}`))
+      if (similar) { match = cluster; break }
     }
     ;(match ?? clusters[clusters.push([]) - 1]).push(item)
   }
@@ -97,13 +113,13 @@ function lexicalClusters(items: ClassifiedArticle[]) {
 }
 
 async function analyzeCluster(cluster: ClassifiedArticle[], budget: Budget): Promise<ClusteredEvent> {
-  const classification = cluster[0].classification as Exclude<Classification, { kind: "none" }>;
+  const classification = getCanonicalClassification(cluster)
   const tAnalysisStart = Date.now()
   try {
     const result = await groqJson(ANALYSIS_MODEL, `Return only JSON: {"event_label":"concise canonical event label","title":"neutral factual title","summary":"one or two sentences","sentiment":"bull|bear|neut","impact_reason":"why it matters to markets","source_angles":["bull|bear|neut"]}. All articles are already lexically pre-clustered, but reject any mismatch by returning event_label="none". Use only supplied sources.`, catalogue(cluster.map((item) => item.article)), budget, INGEST.analysisMaxTokens) as Record<string, unknown>
     const analysisMs = Date.now() - tAnalysisStart
     const label = String(result.event_label ?? "").trim(); const title = String(result.title ?? "").trim(); const summary = String(result.summary ?? "").trim(); const impact = String(result.impact_reason ?? "").trim(); if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
-    console.log(`[timing] Groq analysis call (${classification.value} - "${label}"): ${analysisMs}ms`)
+    console.log(`[timing] Groq analysis call (${classification.value} [${cluster.length} sources] - "${label}"): ${analysisMs}ms`)
     const bucket = windowBucket(cluster[0].article.publishedAt); const isMacro = classification.kind === "sector"; const ticker = isMacro ? sectorTicker[classification.value] : classification.value; const sources = cluster.slice(0, INGEST.maxSourcesPerStory).map((item, index) => ({ article: item.article, angle: Array.isArray(result.source_angles) ? sentiment(result.source_angles[index]) : "neut" as Sentiment }))
     return { event_key: slug(`${ticker}-${bucket}-${label}`), event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((earliest, source) => source.article.publishedAt < earliest ? source.article.publishedAt : earliest, sources[0].article.publishedAt) }
   } catch (error) {
@@ -123,11 +139,18 @@ export async function clusterClassifiedArticles(items: ClassifiedArticle[]): Pro
   for (const cluster of clusters) { try { const event = await analyzeCluster(cluster, budget); rawEvents.push(event) } catch (error) { warnings.push(`cluster skipped: ${error instanceof Error ? error.message : String(error)}`) } }
   const events: ClusteredEvent[] = []
   for (const event of rawEvents) {
-    const existing = events.find((e) => e.ticker === event.ticker && (e.event_key === event.event_key || titleSimilarity(e.title, event.title) >= 0.75))
+    const existing = events.find((e) =>
+      (e.ticker === event.ticker || e.is_macro || event.is_macro) &&
+      (e.event_key === event.event_key || titleSimilarity(e.title, event.title) >= 0.60)
+    )
     if (existing) {
       const urlSeen = new Set<string>(existing.sources.map((s) => s.article.url))
       const additional = event.sources.filter((s) => !urlSeen.has(s.article.url))
       existing.sources = [...existing.sources, ...additional].slice(0, INGEST.maxSourcesPerStory)
+      if (existing.is_macro && !event.is_macro) {
+        existing.ticker = event.ticker
+        existing.is_macro = false
+      }
     } else {
       events.push(event)
     }
