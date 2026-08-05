@@ -78,12 +78,11 @@ export async function fetchMacroQuotes(): Promise<{ quotes: QuoteUpdate[]; error
   const quotes: QuoteUpdate[] = []
   const errors: string[] = []
 
-  const results = await Promise.allSettled(
-    entries.map(async ([symbol, yahooSymbol]) => {
+  for (const [symbol, yahooSymbol] of entries) {
+    try {
       const data = await fetchJson(
         `${YAHOO_BASE}/${encodeURIComponent(yahooSymbol)}?interval=1d&range=5d`,
-        // Yahoo's public chart endpoint rejects requests without a UA.
-        { headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" } },
+        { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", Accept: "application/json" } },
       )
       const meta = data?.chart?.result?.[0]?.meta
       if (!meta) throw new Error(`no chart data for ${yahooSymbol}`)
@@ -93,14 +92,12 @@ export async function fetchMacroQuotes(): Promise<{ quotes: QuoteUpdate[]; error
 
       const update = toUpdate(symbol, price, prevClose)
       if (!update) throw new Error(`no price for ${yahooSymbol}`)
-      return update
-    }),
-  )
-
-  results.forEach((r, i) => {
-    if (r.status === "fulfilled") quotes.push(r.value)
-    else errors.push(`${entries[i][0]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`)
-  })
+      quotes.push(update)
+    } catch (err) {
+      errors.push(`${symbol}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300))
+  }
 
   return { quotes, errors }
 }

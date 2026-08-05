@@ -252,25 +252,35 @@ async function fetchQuotes(finnhubKey: string) {
   const errors: string[] = []; const rows: any[] = []
   const update = (symbol: string, p: number, prev: number) => Number.isFinite(p) && p > 0 ? { symbol, price: Number(p.toFixed(4)), change_pct: Number(((Number.isFinite(prev) && prev > 0 ? (p - prev) / prev * 100 : 0)).toFixed(3)), direction: p < prev ? "dn" : "up" } : null
 
-  const tasks = [
-    ...EQUITIES.map(async (s) => {
+  const equityResults = await Promise.allSettled(
+    EQUITIES.map(async (s) => {
       const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${s}&token=${finnhubKey}`)
       const q = await r.json(), x = update(s, Number(q.c), Number(q.pc))
       if (!x) throw new Error("no price")
       x.change_pct = Number.isFinite(Number(q.dp)) ? Number(Number(q.dp).toFixed(3)) : x.change_pct
       x.direction = x.change_pct < 0 ? "dn" : "up"
       return x
-    }),
-    ...Object.entries(MACRO_SYMBOL_MAP).map(async ([s, remote]) => {
-      const r = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(remote)}?interval=1d&range=5d`)
-      const q = await r.json(), m = q?.chart?.result?.[0]?.meta, x = update(s, Number(m?.regularMarketPrice), Number(m?.previousClose ?? m?.chartPreviousClose))
-      if (!x) throw new Error("no price")
-      return x
     })
-  ]
+  )
+  equityResults.forEach((r, i) => r.status === "fulfilled" ? rows.push(r.value) : errors.push(`${EQUITIES[i]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`))
 
-  const results = await Promise.allSettled(tasks)
-  results.forEach((r, i) => r.status === "fulfilled" ? rows.push(r.value) : errors.push(`${i < EQUITIES.length ? EQUITIES[i] : Object.keys(MACRO_SYMBOL_MAP)[i - EQUITIES.length]}: ${r.reason}`))
+  for (const [s, remote] of Object.entries(MACRO_SYMBOL_MAP)) {
+    try {
+      const r = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(remote)}?interval=1d&range=5d`, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", Accept: "application/json" },
+        signal: AbortSignal.timeout(10_000)
+      })
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
+      const q = await r.json(), m = q?.chart?.result?.[0]?.meta
+      const x = update(s, Number(m?.regularMarketPrice), Number(m?.previousClose ?? m?.chartPreviousClose))
+      if (!x) throw new Error("no price")
+      rows.push(x)
+    } catch (err) {
+      errors.push(`${s}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    await sleep(300)
+  }
+
   return { rows, errors }
 }
 
