@@ -50,6 +50,9 @@ function normalizeOutlet(defaultOutlet: string, sourceTag?: string): string {
   if (/investing\.com/i.test(name)) return "Investing.com"
   if (/ap news|associated press|ap business/i.test(name)) return "Associated Press"
   if (/bloomberg/i.test(name)) return "Bloomberg"
+  if (/seeking alpha/i.test(name)) return "Seeking Alpha"
+  if (/barron/i.test(name)) return "Barron's"
+  if (/benzinga/i.test(name)) return "Benzinga"
   return name.replace(/\s*\([^)]*\)\s*/g, "").trim() || defaultOutlet
 }
 

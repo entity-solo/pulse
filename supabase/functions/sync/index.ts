@@ -166,11 +166,14 @@ const FEEDS = [
   { outlet: "Wall Street Journal", url: "https://news.google.com/rss/search?q=site%3Awsj.com%2Ffinance%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
   { outlet: "Investing.com", url: "https://news.google.com/rss/search?q=site%3Ainvesting.com%2Fnews%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
   { outlet: "AP Business", url: "https://news.google.com/rss/search?q=site%3Aapnews.com%2Fbusiness%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
+  { outlet: "Seeking Alpha", url: "https://news.google.com/rss/search?q=site%3Aseekingalpha.com%2Fnews%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
+  { outlet: "Barron's", url: "https://news.google.com/rss/search?q=site%3Abarrons.com%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
+  { outlet: "Benzinga", url: "https://news.google.com/rss/search?q=site%3Abenzinga.com%2Fnews%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
 ] as const
 
 const ALLOWED_DOMAINS = [
   "reuters.com", "ft.com", "wsj.com", "cnbc.com", "bloomberg.com", "marketwatch.com",
-  "investing.com", "finance.yahoo.com", "seekingalpha.com", "apnews.com", "barrons.com"
+  "investing.com", "finance.yahoo.com", "seekingalpha.com", "apnews.com", "barrons.com", "benzinga.com"
 ] as const
 
 const FINANCIAL_KEYWORDS = [
@@ -195,7 +198,7 @@ const CONFIG = {
   classificationMaxTokens: 2_000,
   analysisMaxTokens: 650,
   minimumClassificationConfidence: 0.78,
-  articleMaxAgeHours: 24,
+  articleMaxAgeHours: 36 + 6,
   clusterWindowHours: 36,
   clusterMinSharedWords: 2,
   clusterMinOverlap: 0.25,
@@ -481,11 +484,31 @@ function sentiment(value: unknown): Sentiment { const label = String(value ?? ""
 
 async function analyzeCluster(groqKey: string, cluster: ClassifiedArticle[], budget: Budget): Promise<ClusteredEvent> {
   const classification = getCanonicalClassification(cluster)
-  const result = await groqJson(groqKey, "llama-3.3-70b-versatile", `Return only JSON: {"event_label":"concise canonical event label","title":"neutral factual title","summary":"one or two sentences","sentiment":"bull|bear|neut","impact_reason":"why it matters to markets","source_angles":["bull|bear|neut"]}. All articles are already lexically pre-clustered, but reject any mismatch by returning event_label="none". Use only supplied sources.`, catalogue(cluster.map((item) => item.article)), budget, CONFIG.analysisMaxTokens) as Record<string, unknown>
-  const label = String(result.event_label ?? "").trim(), title = String(result.title ?? "").trim(), summary = String(result.summary ?? "").trim(), impact = String(result.impact_reason ?? "").trim()
-  if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
   const isMacro = classification.kind === "sector"
   const ticker = isMacro ? SECTOR_TICKER[classification.value!] : classification.value!
+  const outletsList = Array.from(new Set(cluster.map((c) => c.article.outlet))).join(", ")
+
+  const system = `You are a senior financial analyst at a tier-1 quantitative fund.
+Return ONLY valid JSON matching this schema:
+{
+  "event_label": "concise canonical event label (3-5 words)",
+  "title": "neutral factual title",
+  "summary": "1-2 sentences with at least one specific number, percentage, financial figure, or named entity from the articles",
+  "sentiment": "bull|bear|neut",
+  "impact_reason": "explanation of market transmission mechanism (e.g. yield impact, earnings revision, valuation multiple expansion)",
+  "source_angles": ["bull|bear|neut"]
+}
+
+STRICT CONSTRAINTS:
+1. Forbid generic boilerplate: DO NOT use phrases like "investor confidence", "market sentiment", "could lead to", "remains to be seen", "investors are watching", "positive development".
+2. Summary MUST include at least one concrete figure (e.g., revenue %, price target $, rate basis points, or specific deal valuation) or specific named catalyst extracted directly from the articles.
+3. impact_reason MUST state the exact fundamental or valuation transmission mechanism (e.g., "rate-sensitive equities compress margins as 10Y yield rises"), NOT a tautology like "this could impact markets".`
+
+  const prompt = `Ticker target: ${ticker}. Outlets covering this cluster: ${outletsList}.\nSupplied articles:\n${catalogue(cluster.map((item) => item.article))}`
+
+  const result = await groqJson(groqKey, "llama-3.3-70b-versatile", system, prompt, budget, CONFIG.analysisMaxTokens) as Record<string, unknown>
+  const label = String(result.event_label ?? "").trim(), title = String(result.title ?? "").trim(), summary = String(result.summary ?? "").trim(), impact = String(result.impact_reason ?? "").trim()
+  if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
   const sources = cluster.slice(0, CONFIG.maxSourcesPerStory).map((item, index) => ({ article: item.article, angle: Array.isArray(result.source_angles) ? sentiment(result.source_angles[index]) : "neut" as Sentiment }))
   const event_key = deriveDeterministicEventKey(ticker, sources.map((s) => s.article.url))
   return { event_key, event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((earliest, source) => source.article.publishedAt < earliest ? source.article.publishedAt : earliest, sources[0].article.publishedAt) }

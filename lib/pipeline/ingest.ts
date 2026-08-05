@@ -146,8 +146,13 @@ export async function runAnalyzePipeline(): Promise<RunResult> {
     const { data, error } = await db.from("article_cache").select("url, content_hash, headline, summary, outlet, published_at, classification, expires_at").not("classification", "is", null).not("classified_at", "is", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(500)
     if (error) warnings.push(`classified cache lookup failed: ${error.message}`)
 
+    const { data: tickerRows } = await db.from("tickers").select("symbol, price, change_pct, direction")
+    const tickerContext = new Map<string, { price: number; change_pct: number; direction: string }>(
+      (tickerRows ?? []).map((r: any) => [r.symbol, { price: Number(r.price), change_pct: Number(r.change_pct), direction: String(r.direction) }])
+    )
+
     const classifiedRows = cacheToClassified((data ?? []) as CacheRow[])
-    const clustered = await clusterClassifiedArticles(classifiedRows)
+    const clustered = await clusterClassifiedArticles(classifiedRows, tickerContext)
     events = clustered.events
     tokensUsed += clustered.tokensUsed
     warnings.push(...clustered.warnings)

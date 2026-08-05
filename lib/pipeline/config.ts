@@ -50,6 +50,9 @@ export const RSS_FEEDS = [
   { outlet: "Wall Street Journal", url: "https://news.google.com/rss/search?q=site%3Awsj.com%2Ffinance%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
   { outlet: "Investing.com", url: "https://news.google.com/rss/search?q=site%3Ainvesting.com%2Fnews%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
   { outlet: "AP Business", url: "https://news.google.com/rss/search?q=site%3Aapnews.com%2Fbusiness%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
+  { outlet: "Seeking Alpha", url: "https://news.google.com/rss/search?q=site%3Aseekingalpha.com%2Fnews%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
+  { outlet: "Barron's", url: "https://news.google.com/rss/search?q=site%3Abarrons.com%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
+  { outlet: "Benzinga", url: "https://news.google.com/rss/search?q=site%3Abenzinga.com%2Fnews%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
 ] as const
 
 /** Ingest tuning. Kept small enough to stay inside free-tier rate limits. */
@@ -80,8 +83,8 @@ export const INGEST = {
   /** Output ceiling for a single cluster analysis. */
   analysisMaxTokens: 650,
   minimumClassificationConfidence: 0.78,
-  /** Articles older than this are ignored. */
-  articleMaxAgeHours: 24,
+  /** Articles older than this are ignored. Always covers full cluster window with 6h margin. */
+  articleMaxAgeHours: 36 + 6,
   /** Minimum articles required to form a story. */
   minSourcesPerStory: 1,
   /** Sources persisted per story (UI shows a handful). */

@@ -112,15 +112,46 @@ function lexicalClusters(items: ClassifiedArticle[]) {
   return clusters.filter((cluster) => new Set(cluster.map((item) => item.article.outlet)).size >= INGEST.minSourcesPerStory)
 }
 
-async function analyzeCluster(cluster: ClassifiedArticle[], budget: Budget): Promise<ClusteredEvent> {
+export type TickerContextMap = Map<string, { price: number; change_pct: number; direction: string }>
+
+async function analyzeCluster(cluster: ClassifiedArticle[], budget: Budget, tickerContext?: TickerContextMap): Promise<ClusteredEvent> {
   const classification = getCanonicalClassification(cluster)
+  const isMacro = classification.kind === "sector"
+  const ticker = isMacro ? sectorTicker[classification.value] : classification.value
+  const tickerInfo = tickerContext?.get(ticker)
+  const tickerStr = tickerInfo ? `Ticker context for ${ticker}: Price $${tickerInfo.price}, Change ${tickerInfo.change_pct > 0 ? "+" : ""}${tickerInfo.change_pct}%.` : ""
+  const outletsList = Array.from(new Set(cluster.map((c) => c.article.outlet))).join(", ")
+
+  const system = `You are a senior financial analyst at a tier-1 quantitative fund.
+Return ONLY valid JSON matching this schema:
+{
+  "event_label": "concise canonical event label (3-5 words)",
+  "title": "neutral factual title",
+  "summary": "1-2 sentences with at least one specific number, percentage, financial figure, or named entity from the articles",
+  "sentiment": "bull|bear|neut",
+  "impact_reason": "explanation of market transmission mechanism (e.g. yield impact, earnings revision, valuation multiple expansion)",
+  "source_angles": ["bull|bear|neut"]
+}
+
+STRICT CONSTRAINTS:
+1. Forbid generic boilerplate: DO NOT use phrases like "investor confidence", "market sentiment", "could lead to", "remains to be seen", "investors are watching", "positive development".
+2. Summary MUST include at least one concrete figure (e.g., revenue %, price target $, rate basis points, or specific deal valuation) or specific named catalyst extracted directly from the articles.
+3. impact_reason MUST state the exact fundamental or valuation transmission mechanism (e.g., "rate-sensitive equities compress margins as 10Y yield rises"), NOT a tautology like "this could impact markets".`
+
+  const prompt = `${tickerStr} Outlets covering this cluster: ${outletsList}.\nSupplied articles:\n${catalogue(cluster.map((item) => item.article))}`
+
   const tAnalysisStart = Date.now()
   try {
-    const result = await groqJson(ANALYSIS_MODEL, `Return only JSON: {"event_label":"concise canonical event label","title":"neutral factual title","summary":"one or two sentences","sentiment":"bull|bear|neut","impact_reason":"why it matters to markets","source_angles":["bull|bear|neut"]}. All articles are already lexically pre-clustered, but reject any mismatch by returning event_label="none". Use only supplied sources.`, catalogue(cluster.map((item) => item.article)), budget, INGEST.analysisMaxTokens) as Record<string, unknown>
+    const result = await groqJson(ANALYSIS_MODEL, system, prompt, budget, INGEST.analysisMaxTokens) as Record<string, unknown>
     const analysisMs = Date.now() - tAnalysisStart
-    const label = String(result.event_label ?? "").trim(); const title = String(result.title ?? "").trim(); const summary = String(result.summary ?? "").trim(); const impact = String(result.impact_reason ?? "").trim(); if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
+    const label = String(result.event_label ?? "").trim()
+    const title = String(result.title ?? "").trim()
+    const summary = String(result.summary ?? "").trim()
+    const impact = String(result.impact_reason ?? "").trim()
+    if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
     console.log(`[timing] Groq analysis call (${classification.value} [${cluster.length} sources] - "${label}"): ${analysisMs}ms`)
-    const bucket = windowBucket(cluster[0].article.publishedAt); const isMacro = classification.kind === "sector"; const ticker = isMacro ? sectorTicker[classification.value] : classification.value; const sources = cluster.slice(0, INGEST.maxSourcesPerStory).map((item, index) => ({ article: item.article, angle: Array.isArray(result.source_angles) ? sentiment(result.source_angles[index]) : "neut" as Sentiment }))
+    const bucket = windowBucket(cluster[0].article.publishedAt)
+    const sources = cluster.slice(0, INGEST.maxSourcesPerStory).map((item, index) => ({ article: item.article, angle: Array.isArray(result.source_angles) ? sentiment(result.source_angles[index]) : "neut" as Sentiment }))
     return { event_key: slug(`${ticker}-${bucket}-${label}`), event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((earliest, source) => source.article.publishedAt < earliest ? source.article.publishedAt : earliest, sources[0].article.publishedAt) }
   } catch (error) {
     const analysisMs = Date.now() - tAnalysisStart
@@ -129,14 +160,14 @@ async function analyzeCluster(cluster: ClassifiedArticle[], budget: Budget): Pro
   }
 }
 
-export async function clusterClassifiedArticles(items: ClassifiedArticle[]): Promise<{ events: ClusteredEvent[]; warnings: string[]; tokensUsed: number }> {
+export async function clusterClassifiedArticles(items: ClassifiedArticle[], tickerContext?: TickerContextMap): Promise<{ events: ClusteredEvent[]; warnings: string[]; tokensUsed: number }> {
   const warnings: string[] = []; const rawEvents: ClusteredEvent[] = []; const budget: Budget = { used: 0, limit: INGEST.analysisTokenBudget }
   const tClusterStart = Date.now()
   const clusters = lexicalClusters(items)
   const clusterMs = Date.now() - tClusterStart
   console.log(`[timing] Clustering step: ${clusterMs}ms (formed ${clusters.length} clusters from ${items.length} classified items)`)
 
-  for (const cluster of clusters) { try { const event = await analyzeCluster(cluster, budget); rawEvents.push(event) } catch (error) { warnings.push(`cluster skipped: ${error instanceof Error ? error.message : String(error)}`) } }
+  for (const cluster of clusters) { try { const event = await analyzeCluster(cluster, budget, tickerContext); rawEvents.push(event) } catch (error) { warnings.push(`cluster skipped: ${error instanceof Error ? error.message : String(error)}`) } }
   const events: ClusteredEvent[] = []
   for (const event of rawEvents) {
     const existing = events.find((e) =>

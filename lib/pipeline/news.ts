@@ -15,6 +15,7 @@ export const ALLOWED_DOMAINS = [
   "seekingalpha.com",
   "apnews.com",
   "barrons.com",
+  "benzinga.com",
 ] as const
 
 export const FINANCIAL_KEYWORDS = [
