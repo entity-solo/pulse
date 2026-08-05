@@ -24,7 +24,10 @@ function parseJson(text: string) { const trimmed = text.trim().replace(/^```(?:j
 function sentiment(value: unknown): Sentiment { const label = String(value ?? "").toLowerCase(); return ["bull", "bullish", "positive"].includes(label) ? "bull" : ["bear", "bearish", "negative"].includes(label) ? "bear" : "neut" }
 function normalize(value: string) { return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() }
 function words(value: string) { return new Set(normalize(value).split(" ").filter((word) => word.length > 2 && !stopWords.has(word))) }
-function overlap(left: string, right: string) { const a = words(left), b = words(right); let shared = 0; for (const word of a) if (b.has(word)) shared++; return shared / Math.max(1, Math.min(a.size, b.size)) }
+function sharedWordsCount(left: string, right: string) { const a = words(left), b = words(right); let shared = 0; for (const word of a) if (b.has(word)) shared++; return shared }
+function overlap(left: string, right: string) { const a = words(left), b = words(right); if (!a.size || !b.size) return 0; let shared = 0; for (const word of a) if (b.has(word)) shared++; return shared / Math.max(1, Math.min(a.size, b.size)) }
+function isLexicallySimilar(left: string, right: string) { return sharedWordsCount(left, right) >= 3 && overlap(left, right) >= 0.40 }
+function titleSimilarity(left: string, right: string) { return overlap(left, right) }
 function slug(value: string) { return normalize(value).replace(/\s+/g, "-").slice(0, 80) }
 function windowBucket(date: string) { return Math.floor(new Date(date).getTime() / (INGEST.clusterWindowHours * 3_600_000)) }
 
@@ -72,7 +75,7 @@ function lexicalClusters(items: ClassifiedArticle[]) {
   const sorted = [...items].sort((a, b) => a.article.publishedAt.localeCompare(b.article.publishedAt)); const clusters: ClassifiedArticle[][] = []
   for (const item of sorted) {
     const target = `${item.classification.kind}:${item.classification.value}`; const text = `${item.article.headline} ${item.article.summary}`; let match: ClassifiedArticle[] | undefined
-    for (const cluster of clusters) { const first = cluster[0]; const sameTarget = `${first.classification.kind}:${first.classification.value}` === target; const withinWindow = Math.abs(new Date(first.article.publishedAt).getTime() - new Date(item.article.publishedAt).getTime()) <= INGEST.clusterWindowHours * 3_600_000; const similar = cluster.some((member) => overlap(text, `${member.article.headline} ${member.article.summary}`) >= 0.28); if (sameTarget && withinWindow && similar) { match = cluster; break } }
+    for (const cluster of clusters) { const first = cluster[0]; const sameTarget = `${first.classification.kind}:${first.classification.value}` === target; const withinWindow = Math.abs(new Date(first.article.publishedAt).getTime() - new Date(item.article.publishedAt).getTime()) <= INGEST.clusterWindowHours * 3_600_000; const similar = cluster.some((member) => isLexicallySimilar(text, `${member.article.headline} ${member.article.summary}`)); if (sameTarget && withinWindow && similar) { match = cluster; break } }
     ;(match ?? clusters[clusters.push([]) - 1]).push(item)
   }
   return clusters.filter((cluster) => new Set(cluster.map((item) => item.article.outlet)).size >= INGEST.minSourcesPerStory)
@@ -86,7 +89,18 @@ async function analyzeCluster(cluster: ClassifiedArticle[], budget: Budget): Pro
 }
 
 export async function clusterClassifiedArticles(items: ClassifiedArticle[]): Promise<{ events: ClusteredEvent[]; warnings: string[]; tokensUsed: number }> {
-  const warnings: string[] = []; const events: ClusteredEvent[] = []; const budget: Budget = { used: 0, limit: INGEST.analysisTokenBudget }; const keys = new Set<string>()
-  for (const cluster of lexicalClusters(items)) { try { const event = await analyzeCluster(cluster, budget); if (!keys.has(event.event_key)) { keys.add(event.event_key); events.push(event) } } catch (error) { warnings.push(`cluster skipped: ${error instanceof Error ? error.message : String(error)}`) } }
+  const warnings: string[] = []; const rawEvents: ClusteredEvent[] = []; const budget: Budget = { used: 0, limit: INGEST.analysisTokenBudget }
+  for (const cluster of lexicalClusters(items)) { try { const event = await analyzeCluster(cluster, budget); rawEvents.push(event) } catch (error) { warnings.push(`cluster skipped: ${error instanceof Error ? error.message : String(error)}`) } }
+  const events: ClusteredEvent[] = []
+  for (const event of rawEvents) {
+    const existing = events.find((e) => e.ticker === event.ticker && (e.event_key === event.event_key || titleSimilarity(e.title, event.title) >= 0.75))
+    if (existing) {
+      const urlSeen = new Set<string>(existing.sources.map((s) => s.article.url))
+      const additional = event.sources.filter((s) => !urlSeen.has(s.article.url))
+      existing.sources = [...existing.sources, ...additional].slice(0, INGEST.maxSourcesPerStory)
+    } else {
+      events.push(event)
+    }
+  }
   return { events, warnings, tokensUsed: budget.used }
 }
