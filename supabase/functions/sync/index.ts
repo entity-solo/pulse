@@ -313,7 +313,7 @@ class TokenRateLimiter {
 }
 
 const classificationLimiter = new TokenRateLimiter(5500, 60_000)
-const analysisLimiter = new TokenRateLimiter(11000, 60_000)
+const analysisLimiter = new TokenRateLimiter(7500, 60_000)
 
 async function groqJson(apiKey: string, model: string, system: string, prompt: string, budget: Budget, maxTokens: number, articleCount = 0): Promise<unknown> {
   const estimated = articleCount > 0 ? (articleCount * 300) + 600 : Math.ceil((system.length + prompt.length) / 4) + maxTokens
