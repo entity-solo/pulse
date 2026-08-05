@@ -125,6 +125,74 @@ async function updateClassifications(db: Db, classified: ClassifiedArticle[], wa
   for (const write of writes) if (write.error) warnings.push(`classification cache write failed: ${write.error.message}`)
 }
 
+export async function findOrCreateCluster(
+  db: Db,
+  classifiedRows: ClassifiedArticle[],
+  tickerContext: Map<string, { price: number; change_pct: number; direction: string }>
+) {
+  let matchedCount = 0
+  const unclustered: ClassifiedArticle[] = []
+  const warnings: string[] = []
+  const since24h = new Date(Date.now() - 24 * 3_600_000).toISOString()
+
+  for (const item of classifiedRows) {
+    let matchedStoryId: string | null = null
+
+    const { data: cacheRow } = await db
+      .from("article_cache")
+      .select("url, embedding, cluster_id")
+      .eq("url", item.article.url)
+      .single()
+
+    if (cacheRow?.cluster_id) {
+      continue
+    }
+
+    if (cacheRow?.embedding) {
+      const { data: matchData, error: rpcErr } = await db.rpc("match_existing_story" as any, {
+        query_embedding: cacheRow.embedding,
+        match_threshold: 0.15,
+        since_timestamp: since24h,
+      } as any)
+
+      if (!rpcErr && Array.isArray(matchData) && matchData.length > 0 && (matchData[0] as any)?.story_id) {
+        matchedStoryId = (matchData[0] as any).story_id
+      }
+    }
+
+    if (matchedStoryId) {
+      await db.from("article_cache").update({ cluster_id: matchedStoryId }).eq("url", item.article.url)
+      await db.from("story_sources").upsert(
+        [
+          {
+            story_id: matchedStoryId,
+            outlet: item.article.outlet,
+            headline: item.article.headline,
+            excerpt: item.article.summary || item.article.headline,
+            angle: "neut",
+            url: item.article.url,
+            display_order: 99,
+          },
+        ],
+        { onConflict: "story_id,url" }
+      )
+      console.log(`[incremental-cluster] Article "${item.article.headline}" matched existing story ${matchedStoryId}`)
+      matchedCount++
+    } else {
+      unclustered.push(item)
+    }
+  }
+
+  const clustered = await clusterClassifiedArticles(unclustered, tickerContext)
+  return {
+    events: clustered.events,
+    tokensUsed: clustered.tokensUsed,
+    warnings: [...warnings, ...clustered.warnings],
+    matchedCount,
+    newClusterCount: clustered.events.length,
+  }
+}
+
 async function resolveRecentEventKey(db: Db, event: ClusteredEvent) {
   const since = new Date(Date.now() - INGEST.articleCacheDays * 86_400_000).toISOString()
   const { data } = await db.from("stories").select("event_key, title").eq("ticker", event.ticker).gte("published_at", since).limit(100)
@@ -168,10 +236,11 @@ export async function runAnalyzePipeline(): Promise<RunResult> {
     )
 
     const classifiedRows = cacheToClassified((data ?? []) as CacheRow[])
-    const clustered = await clusterClassifiedArticles(classifiedRows, tickerContext)
-    events = clustered.events
-    tokensUsed += clustered.tokensUsed
-    warnings.push(...clustered.warnings)
+    const incrementalResult = await findOrCreateCluster(db, classifiedRows, tickerContext)
+    events = incrementalResult.events
+    tokensUsed += incrementalResult.tokensUsed
+    warnings.push(...incrementalResult.warnings)
+    console.log(`[incremental-cluster] Summary: ${incrementalResult.matchedCount} articles matched existing clusters, ${incrementalResult.newClusterCount} new clusters formed.`)
   } catch (error) {
     errors.push(`pipeline:analyze failed: ${error instanceof Error ? error.message : String(error)}`)
   }

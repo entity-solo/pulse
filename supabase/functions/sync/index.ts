@@ -851,7 +851,37 @@ Deno.serve(async (req) => {
       return [{ article: { url: r.url, headline: r.headline, summary: r.summary, outlet: r.outlet, publishedAt: r.published_at, relatedSymbol: null }, classification: c }]
     })
 
-    const clustered = await clusterClassifiedArticles(groqKey, items)
+    const unclusteredItems: ClassifiedArticle[] = []
+    const since24h = new Date(Date.now() - 24 * 3_600_000).toISOString()
+    let matchedCount = 0
+
+    for (const item of items) {
+      let matchedStoryId: string | null = null
+      const { data: cacheRow } = await db.from("article_cache").select("url, embedding, cluster_id").eq("url", item.article.url).single()
+      if (cacheRow?.cluster_id) continue
+
+      if (cacheRow?.embedding) {
+        const { data: matchData, error: rpcErr } = await db.rpc("match_existing_story" as any, {
+          query_embedding: cacheRow.embedding,
+          match_threshold: 0.15,
+          since_timestamp: since24h,
+        } as any)
+
+        if (!rpcErr && Array.isArray(matchData) && matchData.length > 0 && (matchData[0] as any)?.story_id) {
+          matchedStoryId = (matchData[0] as any).story_id
+        }
+      }
+
+      if (matchedStoryId) {
+        await db.from("article_cache").update({ cluster_id: matchedStoryId }).eq("url", item.article.url)
+        await db.from("story_sources").upsert([{ story_id: matchedStoryId, outlet: item.article.outlet, headline: item.article.headline, excerpt: item.article.summary || item.article.headline, angle: "neut", url: item.article.url, display_order: 99 }], { onConflict: "story_id,url" })
+        matchedCount++
+      } else {
+        unclusteredItems.push(item)
+      }
+    }
+
+    const clustered = await clusterClassifiedArticles(groqKey, unclusteredItems)
     result.tokensUsed += clustered.tokensUsed
     result.warnings.push(...clustered.warnings)
 
