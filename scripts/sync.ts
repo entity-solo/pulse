@@ -2,14 +2,22 @@ import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 
 async function loadLocalEnv() {
-  try {
-    const source = await readFile(resolve(process.cwd(), ".env.local"), "utf8")
-    for (const line of source.split(/\r?\n/)) {
-      const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/)
-      if (match && !process.env[match[1]]) process.env[match[1]] = match[2].replace(/^(['"])(.*)\1$/, "$2")
+  for (const file of [".vercel/.env.production.local", ".env.production", ".env.local", ".env"]) {
+    try {
+      const source = await readFile(resolve(process.cwd(), file), "utf8")
+      for (const line of source.split(/\r?\n/)) {
+        const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/)
+        if (match) {
+          const key = match[1]
+          const val = match[2].replace(/^(['"])(.*)\1$/, "$2")
+          if (val && val !== "[SENSITIVE]" && (!process.env[key] || process.env[key] === "[SENSITIVE]")) {
+            process.env[key] = val
+          }
+        }
+      }
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw error
     }
-  } catch (error: any) {
-    if (error?.code !== "ENOENT") throw error
   }
 }
 
