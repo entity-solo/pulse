@@ -62,6 +62,9 @@ export const RSS_FEEDS = [
   { outlet: "MarketWatch", url: "https://feeds.content.dowjones.io/public/rss/mw_topstories" },
   { outlet: "Reuters (Google News)", url: "https://news.google.com/rss/search?q=site%3Areuters.com%2Fmarkets%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
   { outlet: "Yahoo Finance", url: "https://finance.yahoo.com/news/rssindex" },
+  { outlet: "Wall Street Journal", url: "https://news.google.com/rss/search?q=site%3Awsj.com%2Ffinance%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
+  { outlet: "Investing.com", url: "https://news.google.com/rss/search?q=site%3Ainvesting.com%2Fnews%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
+  { outlet: "AP Business", url: "https://news.google.com/rss/search?q=site%3Aapnews.com%2Fbusiness%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
 ] as const
 
 /** Ingest tuning. Kept small enough to stay inside free-tier rate limits. */
@@ -82,8 +85,8 @@ export const INGEST = {
    * classification pass consume the whole budget and starve analysis, so no
    * stories were ever produced on high-volume runs.
    */
-  classificationTokenBudget: 9_000,
-  analysisTokenBudget: 9_000,
+  classificationTokenBudget: 25_000,
+  analysisTokenBudget: 15_000,
   /** Output ceiling per classification batch; must fit every batch item. */
   classificationMaxTokens: 2_000,
   /** Output ceiling for a single cluster analysis. */
@@ -92,7 +95,7 @@ export const INGEST = {
   /** Articles older than this are ignored. */
   articleMaxAgeHours: 24,
   /** Minimum articles required to form a story. */
-  minSourcesPerStory: 2,
+  minSourcesPerStory: 1,
   /** Sources persisted per story (UI shows a handful). */
   maxSourcesPerStory: 4,
   /** Outlets whose feeds are mostly aggregation spam. */

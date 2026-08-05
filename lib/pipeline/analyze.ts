@@ -85,8 +85,8 @@ async function analyzeCluster(cluster: ClassifiedArticle[], budget: Budget): Pro
   return { event_key: slug(`${ticker}-${bucket}-${label}`), event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((earliest, source) => source.article.publishedAt < earliest ? source.article.publishedAt : earliest, sources[0].article.publishedAt) }
 }
 
-export async function clusterClassifiedArticles(items: ClassifiedArticle[], initialTokens = 0): Promise<{ events: ClusteredEvent[]; warnings: string[]; tokensUsed: number }> {
-  const warnings: string[] = []; const events: ClusteredEvent[] = []; const budget: Budget = { used: initialTokens, limit: INGEST.analysisTokenBudget }; const keys = new Set<string>()
+export async function clusterClassifiedArticles(items: ClassifiedArticle[]): Promise<{ events: ClusteredEvent[]; warnings: string[]; tokensUsed: number }> {
+  const warnings: string[] = []; const events: ClusteredEvent[] = []; const budget: Budget = { used: 0, limit: INGEST.analysisTokenBudget }; const keys = new Set<string>()
   for (const cluster of lexicalClusters(items)) { try { const event = await analyzeCluster(cluster, budget); if (!keys.has(event.event_key)) { keys.add(event.event_key); events.push(event) } } catch (error) { warnings.push(`cluster skipped: ${error instanceof Error ? error.message : String(error)}`) } }
   return { events, warnings, tokensUsed: budget.used }
 }

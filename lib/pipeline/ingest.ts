@@ -28,8 +28,32 @@ export async function runIngest(): Promise<RunResult> {
   const db = createAdminClient(); const startedAt = new Date().toISOString(); const errors: string[] = []; const warnings: string[] = []; let quotesUpdated = 0; let articlesSeen = 0; let tokensUsed = 0; let events: ClusteredEvent[] = []
   try { const quotes = await fetchEquityQuotes(); errors.push(...quotes.errors); const writes = await writeQuotes(db, quotes.quotes); quotesUpdated = writes.updated; errors.push(...writes.errors) } catch (error) { errors.push(`quotes: ${String(error)}`) }
   try {
-    const news = await fetchArticles(new Set()); errors.push(...news.errors); articlesSeen = news.articles.length; const fresh = await cacheArticles(db, news.articles, warnings); const classifiedFresh = await classifyArticles(fresh); warnings.push(...classifiedFresh.warnings); tokensUsed += classifiedFresh.tokensUsed; await updateClassifications(db, classifiedFresh.classified, warnings)
-    const since = new Date(Date.now() - INGEST.clusterWindowHours * 3_600_000).toISOString(); const { data, error } = await db.from("article_cache").select("url, content_hash, headline, summary, outlet, published_at, classification, expires_at").not("classification", "is", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).limit(500); if (error) warnings.push(`classified cache lookup failed: ${error.message}`); const clustered = await clusterClassifiedArticles(cacheToClassified((data ?? []) as CacheRow[]), tokensUsed); events = clustered.events; tokensUsed = clustered.tokensUsed; warnings.push(...clustered.warnings)
+    const news = await fetchArticles(new Set()); errors.push(...news.errors); articlesSeen = news.articles.length
+    const fresh = await cacheArticles(db, news.articles, warnings)
+    console.log(`[ingest] ${fresh.length} fresh articles passed cache filter out of ${news.articles.length} fetched`)
+
+    const since = new Date(Date.now() - INGEST.clusterWindowHours * 3_600_000).toISOString()
+    const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classification", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).limit(40)
+
+    const toClassifyMap = new Map<string, Article>(fresh.map((a) => [a.url, a]))
+    for (const row of (unclassifiedRows ?? []) as any[]) {
+      if (!toClassifyMap.has(row.url)) {
+        toClassifyMap.set(row.url, { url: row.url, headline: row.headline, summary: row.summary, outlet: row.outlet, publishedAt: row.published_at, relatedSymbol: null })
+      }
+    }
+    const toClassify = Array.from(toClassifyMap.values())
+
+    console.log(`[ingest] Calling classifyArticles with ${toClassify.length} articles...`)
+    const classifiedFresh = await classifyArticles(toClassify)
+    warnings.push(...classifiedFresh.warnings); tokensUsed += classifiedFresh.tokensUsed
+    console.log(`[ingest] Classification results (${classifiedFresh.classified.length} classified, ${classifiedFresh.tokensUsed} tokens used):`, JSON.stringify(classifiedFresh.classified, null, 2))
+
+    await updateClassifications(db, classifiedFresh.classified, warnings)
+
+    const { data, error } = await db.from("article_cache").select("url, content_hash, headline, summary, outlet, published_at, classification, expires_at").not("classification", "is", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).limit(500)
+    if (error) warnings.push(`classified cache lookup failed: ${error.message}`)
+    const clustered = await clusterClassifiedArticles(cacheToClassified((data ?? []) as CacheRow[]))
+    events = clustered.events; tokensUsed += clustered.tokensUsed; warnings.push(...clustered.warnings)
   } catch (error) { errors.push(`news/cluster: ${error instanceof Error ? error.message : String(error)}`) }
   let storiesUpserted = 0; let sourcesUpserted = 0
   for (const event of events) try { const eventKey = await resolveRecentEventKey(db, event); const { data: story, error: storyError } = await db.from("stories").upsert({ event_key: eventKey, ticker: event.ticker, is_macro: event.is_macro, sentiment: event.sentiment, title: event.title, summary: event.summary, published_at: event.publishedAt }, { onConflict: "event_key" }).select("id").single(); if (storyError) throw new Error(storyError.message); storiesUpserted++; const { error: sourceError, count } = await db.from("story_sources").upsert(event.sources.map((source, index) => ({ story_id: story.id, outlet: source.article.outlet, headline: source.article.headline, excerpt: source.article.summary || source.article.headline, angle: source.angle, url: source.article.url, display_order: index + 1 })), { onConflict: "story_id,url", count: "exact" }); if (sourceError) throw sourceError; sourcesUpserted += count ?? event.sources.length } catch (error) { errors.push(`event upsert: ${error instanceof Error ? error.message : String(error)}`) }
