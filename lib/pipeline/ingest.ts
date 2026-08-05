@@ -29,11 +29,27 @@ export async function runIngest(): Promise<RunResult> {
   try { const quotes = await fetchEquityQuotes(); errors.push(...quotes.errors); const writes = await writeQuotes(db, quotes.quotes); quotesUpdated = writes.updated; errors.push(...writes.errors) } catch (error) { errors.push(`quotes: ${String(error)}`) }
   try {
     const news = await fetchArticles(new Set()); errors.push(...news.errors); articlesSeen = news.articles.length
+    const now = Date.now()
+    const buckets = { "<1h": 0, "1-3h": 0, "3-6h": 0, "6-12h": 0, "12-24h": 0 }
+    for (const article of news.articles) {
+      const ageHours = (now - new Date(article.publishedAt).getTime()) / 3_600_000
+      if (ageHours < 1) buckets["<1h"]++
+      else if (ageHours < 3) buckets["1-3h"]++
+      else if (ageHours < 6) buckets["3-6h"]++
+      else if (ageHours < 12) buckets["6-12h"]++
+      else buckets["12-24h"]++
+    }
+    const newest = news.articles[0]?.publishedAt ?? "N/A"
+    const oldest = news.articles[news.articles.length - 1]?.publishedAt ?? "N/A"
+    console.log(`[ingest] Fetched ${news.articles.length} RSS articles. Newest: ${newest}, Oldest: ${oldest}`)
+    console.log(`[ingest] Article age distribution:`, JSON.stringify(buckets))
+
     const fresh = await cacheArticles(db, news.articles, warnings)
+    fresh.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
     console.log(`[ingest] ${fresh.length} fresh articles passed cache filter out of ${news.articles.length} fetched`)
 
     const since = new Date(Date.now() - INGEST.clusterWindowHours * 3_600_000).toISOString()
-    const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classification", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).limit(40)
+    const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classification", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(60)
 
     const toClassifyMap = new Map<string, Article>(fresh.map((a) => [a.url, a]))
     for (const row of (unclassifiedRows ?? []) as any[]) {
@@ -41,16 +57,16 @@ export async function runIngest(): Promise<RunResult> {
         toClassifyMap.set(row.url, { url: row.url, headline: row.headline, summary: row.summary, outlet: row.outlet, publishedAt: row.published_at, relatedSymbol: null })
       }
     }
-    const toClassify = Array.from(toClassifyMap.values())
+    const toClassify = Array.from(toClassifyMap.values()).sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
 
-    console.log(`[ingest] Calling classifyArticles with ${toClassify.length} articles...`)
+    console.log(`[ingest] Calling classifyArticles with ${toClassify.length} articles (newest first)...`)
     const classifiedFresh = await classifyArticles(toClassify)
     warnings.push(...classifiedFresh.warnings); tokensUsed += classifiedFresh.tokensUsed
     console.log(`[ingest] Classification results (${classifiedFresh.classified.length} classified, ${classifiedFresh.tokensUsed} tokens used):`, JSON.stringify(classifiedFresh.classified, null, 2))
 
     await updateClassifications(db, classifiedFresh.classified, warnings)
 
-    const { data, error } = await db.from("article_cache").select("url, content_hash, headline, summary, outlet, published_at, classification, expires_at").not("classification", "is", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).limit(500)
+    const { data, error } = await db.from("article_cache").select("url, content_hash, headline, summary, outlet, published_at, classification, expires_at").not("classification", "is", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(500)
     if (error) warnings.push(`classified cache lookup failed: ${error.message}`)
     const clustered = await clusterClassifiedArticles(cacheToClassified((data ?? []) as CacheRow[]))
     events = clustered.events; tokensUsed += clustered.tokensUsed; warnings.push(...clustered.warnings)

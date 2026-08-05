@@ -72,7 +72,7 @@ export const INGEST = {
   /** Company-news symbols polled per 15-min run (rotates across runs). */
   companySymbolsPerRun: 6,
   /** Maximum fresh RSS articles considered per run. */
-  maxArticlesPerRun: 40,
+  maxArticlesPerRun: 60,
   /** Classification batches stay below free-tier token pressure. */
   classificationBatchSize: 5,
   /** Cache every RSS article/classification for this long. */
@@ -85,8 +85,8 @@ export const INGEST = {
    * classification pass consume the whole budget and starve analysis, so no
    * stories were ever produced on high-volume runs.
    */
-  classificationTokenBudget: 25_000,
-  analysisTokenBudget: 15_000,
+  classificationTokenBudget: 60_000,
+  analysisTokenBudget: 35_000,
   /** Output ceiling per classification batch; must fit every batch item. */
   classificationMaxTokens: 2_000,
   /** Output ceiling for a single cluster analysis. */
