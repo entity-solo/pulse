@@ -264,28 +264,95 @@ function candidates(article: Article) {
   return Object.entries(ALIASES).flatMap(([ticker, names]) => names.some((name) => text.includes(` ${normalize(name)} `)) ? [ticker] : [])
 }
 
-function catalogue(rows: Article[], candidateSets?: string[][]) { return rows.map((article, index) => `[${index}] candidates=${candidateSets?.[index]?.join(",") || "none"} ${article.headline}${article.summary ? ` — ${article.summary.slice(0, 350)}` : ""}`).join("\n") }
+function catalogue(rows: Article[], candidateSets?: string[][]) { return rows.map((article, index) => `[${index}] candidates=${candidateSets?.[index]?.join(",") || "none"} ${article.headline}${article.summary ? ` — ${article.summary.slice(0, 100)}` : ""}`).join("\n") }
 
-async function groqJson(apiKey: string, model: string, system: string, prompt: string, budget: Budget, maxTokens: number): Promise<unknown> {
-  const estimated = Math.ceil((system.length + prompt.length) / 4) + maxTokens
+class TokenRateLimiter {
+  private history: Array<{ timestamp: number; tokens: number }> = []
+
+  constructor(private maxWindowTokens = 5500, private windowMs = 60_000) {}
+
+  private pruneHistory(now: number) {
+    this.history = this.history.filter((entry) => now - entry.timestamp < this.windowMs)
+  }
+
+  getWindowTokens(): number {
+    const now = Date.now()
+    this.pruneHistory(now)
+    return this.history.reduce((sum, entry) => sum + entry.tokens, 0)
+  }
+
+  async acquire(estimatedTokens: number): Promise<void> {
+    while (true) {
+      const now = Date.now()
+      this.pruneHistory(now)
+      const currentTokens = this.history.reduce((sum, entry) => sum + entry.tokens, 0)
+      if (currentTokens + estimatedTokens <= this.maxWindowTokens) {
+        break
+      }
+      const oldest = this.history[0]
+      const waitMs = oldest ? Math.max(100, oldest.timestamp + this.windowMs - now + 100) : 1000
+      await sleep(waitMs)
+    }
+  }
+
+  recordUsage(actualTokens: number) {
+    this.history.push({ timestamp: Date.now(), tokens: actualTokens })
+  }
+}
+
+const groqLimiter = new TokenRateLimiter(5500, 60_000)
+
+async function groqJson(apiKey: string, model: string, system: string, prompt: string, budget: Budget, maxTokens: number, articleCount = 0): Promise<unknown> {
+  const estimated = articleCount > 0 ? (articleCount * 300) + 600 : Math.ceil((system.length + prompt.length) / 4) + maxTokens
   if (budget.used + estimated > budget.limit) throw new Error(`token budget exhausted (${budget.used}/${budget.limit})`)
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      temperature: model === "openai/gpt-oss-20b" ? 0 : 0.2,
-      response_format: { type: "json_object" },
-      max_tokens: maxTokens,
-      messages: [{ role: "system", content: system }, { role: "user", content: prompt }]
-    }),
-    signal: AbortSignal.timeout(10_000)
-  })
-  if (response.status === 429) throw new Error("Groq 429 rate limit reached (will retry on next run)")
-  if (!response.ok) throw new Error(`Groq ${response.status}: ${await response.text()}`)
-  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { total_tokens?: number } }
-  budget.used += data.usage?.total_tokens ?? estimated
-  return parseJson(data.choices?.[0]?.message?.content ?? "{}")
+
+  const windowBefore = groqLimiter.getWindowTokens()
+  console.log(`[Groq Limiter] Current window total: ${windowBefore} tokens. Request estimated: ${estimated} tokens.`)
+  await groqLimiter.acquire(estimated)
+
+  const maxRetries = 5
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          temperature: model === "llama-3.1-8b-instant" ? 0 : 0.2,
+          response_format: { type: "json_object" },
+          max_tokens: maxTokens,
+          messages: [{ role: "system", content: system }, { role: "user", content: prompt }]
+        }),
+        signal: AbortSignal.timeout(15_000)
+      })
+
+      if (response.status === 429) {
+        if (attempt < maxRetries) {
+          const backoff = Math.pow(2, attempt) * 1000 + Math.random() * 1000
+          await sleep(backoff)
+          continue
+        }
+        throw new Error(`Groq 429 rate limit reached after ${maxRetries} retries`)
+      }
+
+      if (!response.ok) throw new Error(`Groq ${response.status}: ${await response.text()}`)
+
+      const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { total_tokens?: number } }
+      const actualTokens = data.usage?.total_tokens ?? estimated
+      budget.used += actualTokens
+      groqLimiter.recordUsage(actualTokens)
+      console.log(`[Groq Limiter] Request completed. Estimated: ${estimated}, Actual: ${actualTokens}. New 60s window total: ${groqLimiter.getWindowTokens()} tokens.`)
+      return parseJson(data.choices?.[0]?.message?.content ?? "{}")
+    } catch (err: any) {
+      if (err?.name === "AbortError" || err?.message?.includes("aborted")) {
+        throw new Error("GROQ_TIMEOUT")
+      }
+      if (attempt >= maxRetries || !err?.message?.includes("429")) {
+        throw err
+      }
+    }
+  }
+  throw new Error("Groq rate limit retry budget exhausted")
 }
 
 function normalizeOutlet(defaultOutlet: string, sourceTag?: string): string {
@@ -427,7 +494,7 @@ async function classify(groqKey: string, rows: Article[], budget: Budget, warnin
     const batch = rows.slice(start, start + CONFIG.classificationBatchSize)
     const candidateSets = batch.map(candidates)
     try {
-      const result = await groqJson(groqKey, "openai/gpt-oss-20b", `Return only JSON: {"articles":[{"index":0,"kind":"ticker|sector|none","value":"allowed value or none","confidence":0.0,"evidence":"exact short excerpt"}]}. For ticker, choose only from the article's candidate list; if it is empty, ticker is forbidden. Allowed sectors are tech, finance, energy, macro. Return none for ambiguity, unrelated coverage, or confidence below 0.78. Evidence must be a verbatim article excerpt supporting the decision.`, catalogue(batch, candidateSets), budget, CONFIG.classificationMaxTokens) as { articles?: unknown[] }
+      const result = await groqJson(groqKey, "llama-3.1-8b-instant", `Return only JSON: {"articles":[{"index":0,"kind":"ticker|sector|none","value":"allowed value or none","confidence":0.0,"evidence":"exact short excerpt"}]}. For ticker, choose only from the article's candidate list; if it is empty, ticker is forbidden. Allowed sectors are tech, finance, energy, macro. Return none for ambiguity, unrelated coverage, or confidence below 0.78. Evidence must be a verbatim article excerpt supporting the decision.`, catalogue(batch, candidateSets), budget, CONFIG.classificationMaxTokens, batch.length) as { articles?: unknown[] }
       for (const item of Array.isArray(result.articles) ? result.articles : []) {
         if (!item || typeof item !== "object") continue
         const row = item as Record<string, unknown>
@@ -443,7 +510,11 @@ async function classify(groqKey: string, rows: Article[], budget: Budget, warnin
         else if (kind === "sector" && (SECTORS as readonly string[]).includes(value.toLowerCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "sector", value: value.toLowerCase() as Sector, confidence: conf, evidence } })
       }
     } catch (e) {
-      warnings.push(`classification batch failed: ${e}`)
+      console.warn(`[Groq Fallback] Classification batch failed due to saturated rate limit or error: ${e}`)
+      warnings.push(`classification batch fallback: ${e}`)
+      for (const article of batch) {
+        console.warn(`[Groq Fallback] Skipped article (labeled Neutral fallback): ${article.url}`)
+      }
     }
   }
   return Array.from(classifiedMap.values())

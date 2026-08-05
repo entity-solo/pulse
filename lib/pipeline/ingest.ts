@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin"
-import { classifyArticles, clusterClassifiedArticles, type ClassifiedArticle, type ClusteredEvent } from "./analyze"
+import { classifyArticles, clusterClassifiedArticles, prioritizeArticles, type ClassifiedArticle, type ClusteredEvent } from "./analyze"
 import { INGEST } from "./config"
 import { fetchArticles, passesPreFilters, type Article } from "./news"
 import { fetchEquityQuotes, fetchMacroQuotes, type QuoteUpdate } from "./quotes"
@@ -128,7 +128,8 @@ export async function runAnalyzePipeline(): Promise<RunResult> {
     const queryMs = Date.now() - tQueryStart
     console.log(`[timing] Query unclassified articles from cache: ${queryMs}ms (${unclassifiedRows?.length ?? 0} rows retrieved)`)
 
-    const toClassify: Article[] = ((unclassifiedRows ?? []) as any[]).flatMap((row) => passesPreFilters(row.headline, row.summary || "", row.url) ? [{ url: row.url, headline: row.headline, summary: row.summary, outlet: row.outlet, publishedAt: row.published_at, relatedSymbol: null }] : [])
+    const rawToClassify: Article[] = ((unclassifiedRows ?? []) as any[]).flatMap((row) => passesPreFilters(row.headline, row.summary || "", row.url) ? [{ url: row.url, headline: row.headline, summary: row.summary, outlet: row.outlet, publishedAt: row.published_at, relatedSymbol: null }] : [])
+    const toClassify = prioritizeArticles(rawToClassify)
 
     if (toClassify.length) {
       console.log(`[pipeline:analyze] Classifying ${toClassify.length} unclassified articles...`)

@@ -38,7 +38,7 @@ export const MACRO_SECTORS: Sector[] = ["macro", "index", "commodity"]
 export const CLASSIFICATION_MODEL = "llama-3.1-8b-instant"
 
 /** Groq model used for final market-impact analysis of confirmed clusters. */
-export const ANALYSIS_MODEL = "llama-3.3-70b-versatile"
+export const ANALYSIS_MODEL = "llama-3.1-8b-instant"
 
 /** Public RSS feeds; an unavailable publisher only degrades that one source. */
 export const RSS_FEEDS = [
@@ -76,8 +76,8 @@ export const INGEST = {
    * classification pass consume the whole budget and starve analysis, so no
    * stories were ever produced on high-volume runs.
    */
-  classificationTokenBudget: 60_000,
-  analysisTokenBudget: 35_000,
+  classificationTokenBudget: Number(process.env.CLASSIFICATION_TOKEN_BUDGET) || 60_000,
+  analysisTokenBudget: Number(process.env.ANALYSIS_TOKEN_BUDGET) || 35_000,
   /** Output ceiling per classification batch; must fit every batch item. */
   classificationMaxTokens: 2_000,
   /** Output ceiling for a single cluster analysis. */

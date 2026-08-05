@@ -35,18 +35,93 @@ function titleSimilarity(left: string, right: string) { return overlap(left, rig
 function slug(value: string) { return normalize(value).replace(/\s+/g, "-").slice(0, 80) }
 function windowBucket(date: string) { return Math.floor(new Date(date).getTime() / (INGEST.clusterWindowHours * 3_600_000)) }
 
-async function groqJson(model: string, system: string, prompt: string, budget: Budget, maxTokens: number): Promise<unknown> {
-  const estimated = tokenEstimate(system) + tokenEstimate(prompt) + maxTokens
+class TokenRateLimiter {
+  private history: Array<{ timestamp: number; tokens: number }> = []
+
+  constructor(private maxWindowTokens = 5500, private windowMs = 60_000) {}
+
+  private pruneHistory(now: number) {
+    this.history = this.history.filter((entry) => now - entry.timestamp < this.windowMs)
+  }
+
+  getWindowTokens(): number {
+    const now = Date.now()
+    this.pruneHistory(now)
+    return this.history.reduce((sum, entry) => sum + entry.tokens, 0)
+  }
+
+  async acquire(estimatedTokens: number): Promise<void> {
+    while (true) {
+      const now = Date.now()
+      this.pruneHistory(now)
+      const currentTokens = this.history.reduce((sum, entry) => sum + entry.tokens, 0)
+      if (currentTokens + estimatedTokens <= this.maxWindowTokens) {
+        break
+      }
+      const oldest = this.history[0]
+      const waitMs = oldest ? Math.max(100, oldest.timestamp + this.windowMs - now + 100) : 1000
+      await sleep(waitMs)
+    }
+  }
+
+  recordUsage(actualTokens: number) {
+    this.history.push({ timestamp: Date.now(), tokens: actualTokens })
+  }
+}
+
+const groqLimiter = new TokenRateLimiter(5500, 60_000)
+
+async function groqJson(model: string, system: string, prompt: string, budget: Budget, maxTokens: number, articleCount = 0): Promise<unknown> {
+  const estimated = articleCount > 0 ? (articleCount * 300) + 600 : tokenEstimate(system) + tokenEstimate(prompt) + maxTokens
   if (budget.used + estimated > budget.limit) throw new Error(`token budget exhausted (${budget.used}/${budget.limit})`)
   const apiKey = process.env.GROQ_API_KEY
   if (!apiKey) throw new Error("Missing GROQ_API_KEY")
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, temperature: model === CLASSIFICATION_MODEL ? 0 : 0.2, response_format: { type: "json_object" }, max_tokens: maxTokens, messages: [{ role: "system", content: system }, { role: "user", content: prompt }] }), signal: AbortSignal.timeout(30_000) })
-    if (response.status === 429 && attempt < 3) { await sleep(Math.min(20_000, (Number(response.headers.get("retry-after")) || 2) * 1_000 * (attempt + 1))); continue }
-    if (!response.ok) throw new Error(`Groq ${response.status}: ${await response.text()}`)
-    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { total_tokens?: number } }
-    budget.used += data.usage?.total_tokens ?? estimated
-    return parseJson(data.choices?.[0]?.message?.content ?? "{}")
+
+  const windowBefore = groqLimiter.getWindowTokens()
+  console.log(`[Groq Limiter] Current window total: ${windowBefore} tokens. Request estimated: ${estimated} tokens.`)
+  await groqLimiter.acquire(estimated)
+
+  const maxRetries = 5
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          temperature: model === CLASSIFICATION_MODEL ? 0 : 0.2,
+          response_format: { type: "json_object" },
+          max_tokens: maxTokens,
+          messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+        }),
+        signal: AbortSignal.timeout(15_000),
+      })
+
+      if (response.status === 429) {
+        if (attempt < maxRetries) {
+          const backoff = Math.pow(2, attempt) * 1000 + Math.random() * 1000
+          await sleep(backoff)
+          continue
+        }
+        throw new Error(`Groq 429 rate limit reached after ${maxRetries} retries`)
+      }
+
+      if (!response.ok) throw new Error(`Groq ${response.status}: ${await response.text()}`)
+
+      const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { total_tokens?: number } }
+      const actualTokens = data.usage?.total_tokens ?? estimated
+      budget.used += actualTokens
+      groqLimiter.recordUsage(actualTokens)
+      console.log(`[Groq Limiter] Request completed. Estimated: ${estimated}, Actual: ${actualTokens}. New 60s window total: ${groqLimiter.getWindowTokens()} tokens.`)
+      return parseJson(data.choices?.[0]?.message?.content ?? "{}")
+    } catch (err: any) {
+      if (err?.name === "AbortError" || err?.message?.includes("aborted")) {
+        throw new Error("GROQ_TIMEOUT")
+      }
+      if (attempt >= maxRetries || !err?.message?.includes("429")) {
+        throw err
+      }
+    }
   }
   throw new Error("Groq rate limit retry budget exhausted")
 }
@@ -54,7 +129,27 @@ async function groqJson(model: string, system: string, prompt: string, budget: B
 function candidates(article: Article): string[] {
   return defaultRegistry.getCandidates(article.headline, article.summary || "")
 }
-function catalogue(rows: Article[], candidateSets?: string[][]) { return rows.map((article, index) => `[${index}] candidates=${candidateSets?.[index]?.join(",") || "none"} ${article.headline}${article.summary ? ` — ${article.summary.slice(0, 350)}` : ""}`).join("\n") }
+function catalogue(rows: Article[], candidateSets?: string[][]) { return rows.map((article, index) => `[${index}] candidates=${candidateSets?.[index]?.join(",") || "none"} ${article.headline}${article.summary ? ` — ${article.summary.slice(0, 100)}` : ""}`).join("\n") }
+
+import { TOP100_SYMBOLS } from "./sp500"
+
+const top100SymbolSet = new Set<string>(TOP100_SYMBOLS)
+
+/** Sorts articles so named company tickers come before macro news, ordered by recency. */
+export function prioritizeArticles(articles: Article[]): Article[] {
+  return [...articles].sort((a, b) => {
+    const aCandidates = candidates(a)
+    const bCandidates = candidates(b)
+
+    const aIsNamed = aCandidates.some((symbol) => top100SymbolSet.has(symbol)) || (a.relatedSymbol ? top100SymbolSet.has(a.relatedSymbol) : false)
+    const bIsNamed = bCandidates.some((symbol) => top100SymbolSet.has(symbol)) || (b.relatedSymbol ? top100SymbolSet.has(b.relatedSymbol) : false)
+
+    if (aIsNamed && !bIsNamed) return -1
+    if (!aIsNamed && bIsNamed) return 1
+
+    return b.publishedAt.localeCompare(a.publishedAt)
+  })
+}
 
 export async function classifyArticles(articles: Article[]): Promise<{ classified: ClassifiedArticle[]; warnings: string[]; tokensUsed: number }> {
   const warnings: string[] = []; const classifiedMap = new Map<string, ClassifiedArticle>()
@@ -64,7 +159,7 @@ export async function classifyArticles(articles: Article[]): Promise<{ classifie
     const batch = articles.slice(start, start + INGEST.classificationBatchSize); const candidateSets = batch.map(candidates)
     const tBatchStart = Date.now()
     try {
-      const result = await groqJson(CLASSIFICATION_MODEL, `Return only JSON: {"articles":[{"index":0,"kind":"ticker|sector|none","value":"allowed value or none","confidence":0.0,"evidence":"exact short excerpt"}]}. For ticker, choose only from the article's candidate list; if it is empty, ticker is forbidden. Allowed sectors are tech, finance, energy, macro. Return none for ambiguity, unrelated coverage, or confidence below 0.78. Evidence must be a verbatim article excerpt supporting the decision.`, catalogue(batch, candidateSets), budget, INGEST.classificationMaxTokens) as { articles?: unknown[] }
+      const result = await groqJson(CLASSIFICATION_MODEL, `Return only JSON: {"articles":[{"index":0,"kind":"ticker|sector|none","value":"allowed value or none","confidence":0.0,"evidence":"exact short excerpt"}]}. For ticker, choose only from the article's candidate list; if it is empty, ticker is forbidden. Allowed sectors are tech, finance, energy, macro. Return none for ambiguity, unrelated coverage, or confidence below 0.78. Evidence must be a verbatim article excerpt supporting the decision.`, catalogue(batch, candidateSets), budget, INGEST.classificationMaxTokens, batch.length) as { articles?: unknown[] }
       const batchMs = Date.now() - tBatchStart
       console.log(`[timing] Groq classification batch (size ${batch.length}): ${batchMs}ms`)
       for (const item of Array.isArray(result.articles) ? result.articles : []) {
@@ -76,8 +171,11 @@ export async function classifyArticles(articles: Article[]): Promise<{ classifie
       }
     } catch (error) {
       const batchMs = Date.now() - tBatchStart
-      console.log(`[timing] Groq classification batch (size ${batch.length}) failed after: ${batchMs}ms`)
-      warnings.push(`classification batch failed: ${error instanceof Error ? error.message : String(error)}`)
+      console.warn(`[Groq Fallback] Classification batch (size ${batch.length}) failed after ${batchMs}ms due to saturated rate limit or error: ${error instanceof Error ? error.message : String(error)}`)
+      warnings.push(`classification batch fallback: ${error instanceof Error ? error.message : String(error)}`)
+      for (const article of batch) {
+        console.warn(`[Groq Fallback] Skipped article (labeled Neutral fallback): ${article.url}`)
+      }
     }
   }
   return { classified: Array.from(classifiedMap.values()), warnings, tokensUsed: budget.used }
