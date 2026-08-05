@@ -1,7 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin"
 import { classifyArticles, clusterClassifiedArticles, type ClassifiedArticle, type ClusteredEvent } from "./analyze"
 import { INGEST } from "./config"
-import { fetchArticles, type Article } from "./news"
+import { fetchArticles, passesPreFilters, type Article } from "./news"
 import { fetchEquityQuotes, fetchMacroQuotes, type QuoteUpdate } from "./quotes"
 
 export type RunResult = { job: string; status: "ok" | "partial" | "error"; quotesUpdated: number; articlesSeen: number; storiesUpserted: number; sourcesUpserted: number; tokensUsed: number; errors: string[]; warnings: string[] }
@@ -17,7 +17,31 @@ async function writeQuotes(db: Db, quotes: QuoteUpdate[]) { const errors: string
 
 export async function runQuotes(opts: { equities: boolean; macro: boolean }): Promise<RunResult> { const db = createAdminClient(); const quotes: QuoteUpdate[] = []; const errors: string[] = []; if (opts.equities) { try { const result = await fetchEquityQuotes(); quotes.push(...result.quotes); errors.push(...result.errors) } catch (error) { errors.push(`equities: ${String(error)}`) } } if (opts.macro) { try { const result = await fetchMacroQuotes(); quotes.push(...result.quotes); errors.push(...result.errors) } catch (error) { errors.push(`macro: ${String(error)}`) } } const writes = await writeQuotes(db, quotes); errors.push(...writes.errors); return { job: opts.equities && opts.macro ? "quotes:all" : opts.macro ? "quotes:macro" : "quotes:equities", status: errors.length ? writes.updated ? "partial" : "error" : "ok", quotesUpdated: writes.updated, articlesSeen: 0, storiesUpserted: 0, sourcesUpserted: 0, tokensUsed: 0, errors, warnings: [] } }
 
-async function cacheArticles(db: Db, articles: Article[], warnings: string[]) { const now = new Date(); const expiresAt = new Date(now.getTime() + INGEST.articleCacheDays * 86_400_000).toISOString(); const hashes = new Map(articles.map((article) => [article.url, articleHash(article)])); const { data, error } = await db.from("article_cache").select("url, content_hash, expires_at").in("url", articles.map((article) => article.url)); if (error) warnings.push(`article cache lookup failed: ${error.message}`); const cached = new Map((data ?? []).map((row: any) => [row.url, row])); const fresh = articles.filter((article) => { const row = cached.get(article.url); return !row || row.content_hash !== hashes.get(article.url) || new Date(row.expires_at).getTime() <= now.getTime() }); if (fresh.length) { const { error: writeError } = await db.from("article_cache").upsert(fresh.map((article) => ({ url: article.url, content_hash: hashes.get(article.url), headline: article.headline, summary: article.summary, outlet: article.outlet, published_at: article.publishedAt, fetched_at: now.toISOString(), expires_at: expiresAt, classification: null, classified_at: null, updated_at: now.toISOString() })), { onConflict: "url" }); if (writeError) warnings.push(`article cache write failed: ${writeError.message}`) } return fresh }
+async function cacheArticles(db: Db, articles: Article[], warnings: string[]) {
+  const now = new Date(); const nowIso = now.toISOString(); const expiresAt = new Date(now.getTime() + INGEST.articleCacheDays * 86_400_000).toISOString(); const hashes = new Map(articles.map((article) => [article.url, articleHash(article)])); const { data, error } = await db.from("article_cache").select("url, content_hash, expires_at").in("url", articles.map((article) => article.url)); if (error) warnings.push(`article cache lookup failed: ${error.message}`); const cached = new Map((data ?? []).map((row: any) => [row.url, row])); const fresh = articles.filter((article) => { const row = cached.get(article.url); return !row || row.content_hash !== hashes.get(article.url) || new Date(row.expires_at).getTime() <= now.getTime() });
+  if (fresh.length) {
+    const records = fresh.map((article) => {
+      const passes = passesPreFilters(article.headline, article.summary, article.url)
+      return {
+        url: article.url,
+        content_hash: hashes.get(article.url),
+        headline: article.headline,
+        summary: article.summary,
+        outlet: article.outlet,
+        published_at: article.publishedAt,
+        fetched_at: nowIso,
+        expires_at: expiresAt,
+        classification: passes ? null : { kind: "none" },
+        classified_at: passes ? null : nowIso,
+        classification_attempted_at: passes ? null : nowIso,
+        updated_at: nowIso,
+      }
+    })
+    const { error: writeError } = await db.from("article_cache").upsert(records, { onConflict: "url" });
+    if (writeError) warnings.push(`article cache write failed: ${writeError.message}`)
+  }
+  return fresh.filter((a) => passesPreFilters(a.headline, a.summary, a.url))
+}
 
 function cacheToClassified(rows: CacheRow[]): ClassifiedArticle[] { return rows.flatMap((row) => { const data = row.classification; if (!data || typeof data !== "object") return []; const value = data as Record<string, unknown>; const kind = String(value.kind ?? ""); const target = String(value.value ?? ""); const confidence = Number(value.confidence); const evidence = String(value.evidence ?? ""); if (!Number.isFinite(confidence) || !evidence || !["ticker", "sector"].includes(kind)) return []; return [{ article: { url: row.url, headline: row.headline, summary: row.summary, outlet: row.outlet, publishedAt: row.published_at, relatedSymbol: null }, classification: { kind: kind as "ticker", value: target, confidence, evidence } as any }] }) }
 
@@ -46,10 +70,11 @@ export async function runIngest(): Promise<RunResult> {
 
     const fresh = await cacheArticles(db, news.articles, warnings)
     fresh.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
-    console.log(`[ingest] ${fresh.length} fresh articles passed cache filter out of ${news.articles.length} fetched`)
+    console.log(`[ingest] ${fresh.length} fresh articles passed pre-filters and cache check out of ${news.articles.length} fetched`)
 
     const since = new Date(Date.now() - INGEST.clusterWindowHours * 3_600_000).toISOString()
-    const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classified_at", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(60)
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 3_600_000).toISOString()
+    const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classified_at", null).or(`classification_attempted_at.is.null,classification_attempted_at.lt.${twentyFourHoursAgo}`).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(60)
 
     const toClassifyMap = new Map<string, Article>(fresh.map((a) => [a.url, a]))
     for (const row of (unclassifiedRows ?? []) as any[]) {
@@ -58,6 +83,11 @@ export async function runIngest(): Promise<RunResult> {
       }
     }
     const toClassify = Array.from(toClassifyMap.values()).sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
+
+    if (toClassify.length) {
+      const attemptNow = new Date().toISOString()
+      await db.from("article_cache").update({ classification_attempted_at: attemptNow, updated_at: attemptNow }).in("url", toClassify.map((a) => a.url))
+    }
 
     console.log(`[ingest] Calling classifyArticles with ${toClassify.length} articles (newest first)...`)
     const classifiedFresh = await classifyArticles(toClassify)

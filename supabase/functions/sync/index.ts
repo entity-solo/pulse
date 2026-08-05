@@ -74,6 +74,25 @@ const FEEDS = [
   { outlet: "AP Business", url: "https://news.google.com/rss/search?q=site%3Aapnews.com%2Fbusiness%20when%3A1d&hl=en-US&gl=US&ceid=US%3Aen" },
 ] as const
 
+const ALLOWED_DOMAINS = [
+  "reuters.com", "ft.com", "wsj.com", "cnbc.com", "bloomberg.com", "marketwatch.com",
+  "investing.com", "finance.yahoo.com", "seekingalpha.com", "apnews.com", "barrons.com"
+] as const
+
+const FINANCIAL_KEYWORDS = [
+  "stock", "share", "market", "price", "earnings", "revenue", "profit", "rate", "bond", "fed",
+  "gdp", "inflation", "ipo", "merger", "acquisition", "quarter", "fiscal", "trading", "investor",
+  "fund", "equity", "crypto", "rally", "surge", "plunge", "beat", "miss", "guidance", "outlook"
+] as const
+
+function passesPreFilters(headline: string, summary: string, url: string): boolean {
+  const lowerUrl = url.toLowerCase()
+  const whitelisted = ALLOWED_DOMAINS.some((domain) => lowerUrl.includes(domain))
+  if (!whitelisted) return false
+  const text = ` ${headline} ${summary} `.toLowerCase()
+  return FINANCIAL_KEYWORDS.some((kw) => text.includes(kw))
+}
+
 const CONFIG = {
   maxArticlesPerRun: 15,
   classificationBatchSize: 5,
@@ -399,19 +418,43 @@ Deno.serve(async (req) => {
     fresh.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
 
     if (fresh.length) {
-      await db.from("article_cache").upsert(fresh.map((a) => ({ url: a.url, content_hash: articleHash(a), headline: a.headline, summary: a.summary, outlet: a.outlet, published_at: a.publishedAt, fetched_at: now.toISOString(), expires_at: expiresAt, classification: null, classified_at: null, updated_at: now.toISOString() })), { onConflict: "url" })
+      const records = fresh.map((a) => {
+        const passes = passesPreFilters(a.headline, a.summary, a.url)
+        return {
+          url: a.url,
+          content_hash: articleHash(a),
+          headline: a.headline,
+          summary: a.summary,
+          outlet: a.outlet,
+          published_at: a.publishedAt,
+          fetched_at: now.toISOString(),
+          expires_at: expiresAt,
+          classification: passes ? null : { kind: "none" },
+          classified_at: passes ? null : now.toISOString(),
+          classification_attempted_at: passes ? null : now.toISOString(),
+          updated_at: now.toISOString(),
+        }
+      })
+      await db.from("article_cache").upsert(records, { onConflict: "url" })
     }
 
     const since = new Date(Date.now() - CONFIG.clusterWindowHours * 3_600_000).toISOString()
-    const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classified_at", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(60)
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 3_600_000).toISOString()
+    const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classified_at", null).or(`classification_attempted_at.is.null,classification_attempted_at.lt.${twentyFourHoursAgo}`).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(60)
 
-    const toClassifyMap = new Map<string, Article>(fresh.map((a) => [a.url, a]))
+    const freshPassing = fresh.filter((a) => passesPreFilters(a.headline, a.summary, a.url))
+    const toClassifyMap = new Map<string, Article>(freshPassing.map((a) => [a.url, a]))
     for (const row of (unclassifiedRows ?? []) as any[]) {
-      if (!toClassifyMap.has(row.url)) {
+      if (!toClassifyMap.has(row.url) && passesPreFilters(row.headline, row.summary || "", row.url)) {
         toClassifyMap.set(row.url, { url: row.url, headline: row.headline, summary: row.summary, outlet: row.outlet, publishedAt: row.published_at, relatedSymbol: null })
       }
     }
     const toClassify = Array.from(toClassifyMap.values()).sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
+
+    if (toClassify.length) {
+      const attemptNow = new Date().toISOString()
+      await db.from("article_cache").update({ classification_attempted_at: attemptNow, updated_at: attemptNow }).in("url", toClassify.map((a) => a.url))
+    }
 
     const classifiedFresh = await classify(groqKey, toClassify, budget, result.warnings)
     result.tokensUsed += budget.used

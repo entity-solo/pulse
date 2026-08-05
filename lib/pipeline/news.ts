@@ -3,6 +3,40 @@ import { INGEST, RSS_FEEDS } from "./config"
 export type Article = { headline: string; summary: string; outlet: string; url: string; publishedAt: string; relatedSymbol: string | null }
 type RssItem = Omit<Article, "relatedSymbol">
 
+export const ALLOWED_DOMAINS = [
+  "reuters.com",
+  "ft.com",
+  "wsj.com",
+  "cnbc.com",
+  "bloomberg.com",
+  "marketwatch.com",
+  "investing.com",
+  "finance.yahoo.com",
+  "seekingalpha.com",
+  "apnews.com",
+  "barrons.com",
+] as const
+
+export const FINANCIAL_KEYWORDS = [
+  "stock", "share", "market", "price", "earnings", "revenue", "profit", "rate", "bond", "fed",
+  "gdp", "inflation", "ipo", "merger", "acquisition", "quarter", "fiscal", "trading", "investor",
+  "fund", "equity", "crypto", "rally", "surge", "plunge", "beat", "miss", "guidance", "outlook",
+] as const
+
+export function isWhitelistedDomain(url: string): boolean {
+  const lower = url.toLowerCase()
+  return ALLOWED_DOMAINS.some((domain) => lower.includes(domain))
+}
+
+export function hasFinancialKeyword(headline: string, summary: string): boolean {
+  const text = ` ${headline} ${summary} `.toLowerCase()
+  return FINANCIAL_KEYWORDS.some((kw) => text.includes(kw))
+}
+
+export function passesPreFilters(headline: string, summary: string, url: string): boolean {
+  return isWhitelistedDomain(url) && hasFinancialKeyword(headline, summary)
+}
+
 function unescapeHtml(text: string): string {
   return text
     .replace(/&amp;/gi, "&")
