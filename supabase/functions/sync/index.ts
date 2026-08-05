@@ -1,7 +1,16 @@
 import { createClient } from "npm:@supabase/supabase-js@2"
 
 const EQUITIES = [
-  "NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "JPM", "GS", "BAC", "WFC", "XOM", "CVX", "COP", "SLB"
+  "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "BRK.B", "LLY", "AVGO",
+  "JPM", "WMT", "UNH", "V", "XOM", "MA", "ORCL", "COST", "HD", "PG",
+  "JNJ", "NFLX", "BAC", "ABBV", "CRM", "CVX", "WFC", "KO", "TMUS", "CSCO",
+  "PEP", "IBM", "MS", "ACN", "LIN", "MCD", "DIS", "ABT", "PM", "GE",
+  "INTU", "QCOM", "DHR", "CAT", "AMD", "VRTX", "TXN", "BKNG", "AMAT", "PFE",
+  "T", "NOW", "LOW", "AMGN", "C", "SPGI", "ISRG", "UNP", "GS", "COP",
+  "HON", "CMCSA", "RTX", "PGR", "TJX", "EOG", "SCHW", "SYK", "BA", "ELV",
+  "DE", "ADP", "VZ", "NKE", "BSX", "MMC", "LRCX", "ADBE", "BX", "PLTR",
+  "GILD", "LMT", "MDLZ", "MU", "FI", "SBUX", "PANW", "REGN", "CB", "CI",
+  "UPS", "PH", "KMI", "AMT", "SHW", "MO", "SLB", "CVS", "CDNS", "KKR"
 ] as const
 
 const MACRO_SYMBOL_MAP: Record<string, string> = {
@@ -29,21 +38,106 @@ const SECTOR_TICKER: Record<string, string> = {
 }
 
 const ALIASES: Record<string, string[]> = {
-  NVDA: ["nvidia"],
-  AAPL: ["apple"],
-  MSFT: ["microsoft"],
-  TSLA: ["tesla"],
-  AMZN: ["amazon"],
-  GOOGL: ["alphabet", "google"],
-  META: ["meta platforms"],
+  AAPL: ["apple", "iphone", "mac", "ipad"],
+  MSFT: ["microsoft", "azure", "windows", "office"],
+  NVDA: ["nvidia", "geforce", "cuda"],
+  AMZN: ["amazon", "aws", "prime"],
+  GOOGL: ["alphabet", "google", "youtube", "deepmind"],
+  META: ["meta", "facebook", "instagram", "whatsapp"],
+  TSLA: ["tesla", "elon musk"],
+  "BRK.B": ["berkshire hathaway", "warren buffett"],
+  LLY: ["eli lilly"],
+  AVGO: ["broadcom"],
   JPM: ["jpmorgan", "jpmorgan chase"],
-  GS: ["goldman sachs"],
-  BAC: ["bank of america"],
-  WFC: ["wells fargo"],
+  WMT: ["walmart"],
+  UNH: ["unitedhealth", "united health"],
+  V: ["visa"],
   XOM: ["exxon mobil", "exxon"],
+  MA: ["mastercard"],
+  ORCL: ["oracle"],
+  COST: ["costco"],
+  HD: ["home depot"],
+  PG: ["procter & gamble", "p&g"],
+  JNJ: ["johnson & johnson", "j&j"],
+  NFLX: ["netflix"],
+  BAC: ["bank of america"],
+  ABBV: ["abbvie"],
+  CRM: ["salesforce"],
   CVX: ["chevron"],
+  WFC: ["wells fargo"],
+  KO: ["coca-cola", "coke"],
+  TMUS: ["t-mobile"],
+  CSCO: ["cisco"],
+  PEP: ["pepsico", "pepsi"],
+  IBM: ["ibm"],
+  MS: ["morgan stanley"],
+  ACN: ["accenture"],
+  LIN: ["linde"],
+  MCD: ["mcdonald's", "mcdonalds"],
+  DIS: ["disney", "walt disney"],
+  ABT: ["abbott"],
+  PM: ["philip morris"],
+  GE: ["general electric", "ge"],
+  INTU: ["intuit", "turbotax"],
+  QCOM: ["qualcomm"],
+  DHR: ["danaher"],
+  CAT: ["caterpillar"],
+  AMD: ["amd", "advanced micro devices"],
+  VRTX: ["vertex"],
+  TXN: ["texas instruments"],
+  BKNG: ["booking holdings", "booking.com"],
+  AMAT: ["applied materials"],
+  PFE: ["pfizer"],
+  T: ["at&t"],
+  NOW: ["servicenow"],
+  LOW: ["lowe's", "lowes"],
+  AMGN: ["amgen"],
+  C: ["citigroup", "citi"],
+  SPGI: ["s&p global"],
+  ISRG: ["intuitive surgical"],
+  UNP: ["union pacific"],
+  GS: ["goldman sachs"],
   COP: ["conocophillips"],
-  SLB: ["schlumberger"],
+  HON: ["honeywell"],
+  CMCSA: ["comcast"],
+  RTX: ["rtx", "raytheon"],
+  PGR: ["progressive"],
+  TJX: ["tjx"],
+  EOG: ["eog resources"],
+  SCHW: ["charles schwab", "schwab"],
+  SYK: ["stryker"],
+  BA: ["boeing"],
+  ELV: ["elevance health", "anthem"],
+  DE: ["deere", "john deere"],
+  ADP: ["adp"],
+  VZ: ["verizon"],
+  NKE: ["nike"],
+  BSX: ["boston scientific"],
+  MMC: ["marsh mclennan"],
+  LRCX: ["lam research"],
+  ADBE: ["adobe"],
+  BX: ["blackstone"],
+  PLTR: ["palantir"],
+  GILD: ["gilead"],
+  LMT: ["lockheed martin"],
+  MDLZ: ["mondelez"],
+  MU: ["micron"],
+  FI: ["fiserv"],
+  SBUX: ["starbucks"],
+  PANW: ["palo alto networks"],
+  REGN: ["regeneron"],
+  CB: ["chubb"],
+  CI: ["cigna"],
+  UPS: ["ups", "united parcel service"],
+  PH: ["parker hannifin"],
+  KMI: ["kinder morgan"],
+  AMT: ["american tower"],
+  SHW: ["sherwin-williams"],
+  MO: ["altria"],
+  SLB: ["schlumberger", "slb"],
+  CVS: ["cvs", "cvs health"],
+  CDNS: ["cadence"],
+  KKR: ["kkr"],
 }
 
 const STOP_WORDS = new Set([
@@ -273,17 +367,33 @@ async function fetchQuotes(finnhubKey: string) {
   const errors: string[] = []; const rows: any[] = []
   const update = (symbol: string, p: number, prev: number) => Number.isFinite(p) && p > 0 ? { symbol, price: Number(p.toFixed(4)), change_pct: Number(((Number.isFinite(prev) && prev > 0 ? (p - prev) / prev * 100 : 0)).toFixed(3)), direction: p < prev ? "dn" : "up" } : null
 
-  const equityResults = await Promise.allSettled(
-    EQUITIES.map(async (s) => {
-      const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${s}&token=${finnhubKey}`)
-      const q = await r.json(), x = update(s, Number(q.c), Number(q.pc))
-      if (!x) throw new Error("no price")
-      x.change_pct = Number.isFinite(Number(q.dp)) ? Number(Number(q.dp).toFixed(3)) : x.change_pct
-      x.direction = x.change_pct < 0 ? "dn" : "up"
-      return x
-    })
-  )
-  equityResults.forEach((r, i) => r.status === "fulfilled" ? rows.push(r.value) : errors.push(`${EQUITIES[i]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`))
+  for (let i = 0; i < EQUITIES.length; i += 5) {
+    if (i > 0) await sleep(2000)
+    const batch = EQUITIES.slice(i, i + 5)
+    const equityResults = await Promise.allSettled(
+      batch.map(async (s) => {
+        const fs = s === "BRK.B" ? "BRK-B" : s === "FI" ? "FISV" : s
+        for (let attempt = 0; attempt <= 2; attempt++) {
+          try {
+            const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(fs)}&token=${finnhubKey}`)
+            if (r.status === 429 && attempt < 2) {
+              await sleep(3000 * (attempt + 1))
+              continue
+            }
+            const q = await r.json(), x = update(s, Number(q.c), Number(q.pc))
+            if (!x) throw new Error("no price")
+            x.change_pct = Number.isFinite(Number(q.dp)) ? Number(Number(q.dp).toFixed(3)) : x.change_pct
+            x.direction = x.change_pct < 0 ? "dn" : "up"
+            return x
+          } catch (e: any) {
+            if (attempt === 2) throw e
+          }
+        }
+        throw new Error("no price")
+      })
+    )
+    equityResults.forEach((r, idx) => r.status === "fulfilled" ? rows.push(r.value) : errors.push(`${batch[idx]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`))
+  }
 
   for (const [s, remote] of Object.entries(MACRO_SYMBOL_MAP)) {
     try {

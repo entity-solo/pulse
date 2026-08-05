@@ -1,5 +1,6 @@
 import { ALL_SYMBOLS, ANALYSIS_MODEL, CLASSIFICATION_MODEL, INGEST } from "./config"
 import type { Article } from "./news"
+import { TOP100_ALIASES } from "./sp500"
 
 const allowedSymbols = new Set<string>(ALL_SYMBOLS)
 const sectors = ["tech", "finance", "energy", "macro"] as const
@@ -12,9 +13,7 @@ export type Classification =
 
 export type ClassifiedArticle = { article: Article; classification: Classification }
 
-const aliases: Record<string, readonly string[]> = {
-  NVDA: ["nvidia"], AAPL: ["apple"], MSFT: ["microsoft"], TSLA: ["tesla"], AMZN: ["amazon"], GOOGL: ["alphabet", "google"], META: ["meta platforms"], JPM: ["jpmorgan", "jpmorgan chase"], GS: ["goldman sachs"], BAC: ["bank of america"], WFC: ["wells fargo"], XOM: ["exxon mobil", "exxon"], CVX: ["chevron"], COP: ["conocophillips"], SLB: ["schlumberger"],
-}
+const aliases: Record<string, readonly string[]> = TOP100_ALIASES
 const sectorTicker: Record<Sector, string> = { tech: "NDX", finance: "SPX", energy: "WTI", macro: "SPX" }
 const stopWords = new Set(["the", "and", "for", "with", "from", "after", "into", "over", "that", "this", "will", "stock", "shares", "market", "company", "reports", "quarterly", "earnings", "says", "said"])
 

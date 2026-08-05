@@ -1,11 +1,11 @@
 -- Supabase Edge Function schedule for 3 independent jobs:
 -- Set Vault secrets before applying: pulse_sync_project_url and pulse_sync_cron_secret.
 
--- Job 1: quotes:sync (every 5 minutes)
-SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'pulse-sync-quotes-every-5-minutes';
+-- Job 1: quotes:sync (every 15 minutes)
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'pulse-sync-quotes-every-15-minutes';
 SELECT cron.schedule(
-  'pulse-sync-quotes-every-5-minutes',
-  '*/5 * * * *',
+  'pulse-sync-quotes-every-15-minutes',
+  '*/15 * * * *',
   $$
     SELECT net.http_post(
       url := (SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name = 'pulse_sync_project_url') || '/functions/v1/sync?job=quotes',
