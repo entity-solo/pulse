@@ -285,7 +285,8 @@ async function fetchQuotes(finnhubKey: string) {
 }
 
 async function classify(groqKey: string, rows: Article[], budget: Budget, warnings: string[]) {
-  const classified: ClassifiedArticle[] = []
+  const classifiedMap = new Map<string, ClassifiedArticle>()
+  rows.forEach((a) => classifiedMap.set(a.url, { article: a, classification: { kind: "none", value: "", confidence: 0, evidence: "" } as any }))
   for (let start = 0; start < rows.length; start += CONFIG.classificationBatchSize) {
     const batch = rows.slice(start, start + CONFIG.classificationBatchSize)
     const candidateSets = batch.map(candidates)
@@ -302,14 +303,14 @@ async function classify(groqKey: string, rows: Article[], budget: Budget, warnin
           warnings.push(`discarded low-confidence/unsupported classification for ${batch[index].url}`)
           continue
         }
-        if (kind === "ticker" && candidateSets[index].includes(value.toUpperCase()) && ALLOWED_SYMBOLS.has(value.toUpperCase())) classified.push({ article: batch[index], classification: { kind: "ticker", value: value.toUpperCase(), confidence: conf, evidence } })
-        else if (kind === "sector" && (SECTORS as readonly string[]).includes(value.toLowerCase())) classified.push({ article: batch[index], classification: { kind: "sector", value: value.toLowerCase() as Sector, confidence: conf, evidence } })
+        if (kind === "ticker" && candidateSets[index].includes(value.toUpperCase()) && ALLOWED_SYMBOLS.has(value.toUpperCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "ticker", value: value.toUpperCase(), confidence: conf, evidence } })
+        else if (kind === "sector" && (SECTORS as readonly string[]).includes(value.toLowerCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "sector", value: value.toLowerCase() as Sector, confidence: conf, evidence } })
       }
     } catch (e) {
       warnings.push(`classification batch failed: ${e}`)
     }
   }
-  return classified
+  return Array.from(classifiedMap.values())
 }
 
 function lexicalClusters(items: ClassifiedArticle[]) {
@@ -402,7 +403,7 @@ Deno.serve(async (req) => {
     }
 
     const since = new Date(Date.now() - CONFIG.clusterWindowHours * 3_600_000).toISOString()
-    const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classification", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(60)
+    const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classified_at", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(60)
 
     const toClassifyMap = new Map<string, Article>(fresh.map((a) => [a.url, a]))
     for (const row of (unclassifiedRows ?? []) as any[]) {
@@ -417,7 +418,11 @@ Deno.serve(async (req) => {
     await Promise.all(classifiedFresh.map((x) => db.from("article_cache").update({ classification: x.classification, classified_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("url", x.article.url)))
 
     const { data: rows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at, classification").not("classification", "is", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(500)
-    const items: ClassifiedArticle[] = (rows ?? []).flatMap((r: any) => r.classification ? [{ article: { url: r.url, headline: r.headline, summary: r.summary, outlet: r.outlet, publishedAt: r.published_at, relatedSymbol: null }, classification: r.classification }] : [])
+    const items: ClassifiedArticle[] = (rows ?? []).flatMap((r: any) => {
+      const c = r.classification
+      if (!c || typeof c !== "object" || c.kind === "none") return []
+      return [{ article: { url: r.url, headline: r.headline, summary: r.summary, outlet: r.outlet, publishedAt: r.published_at, relatedSymbol: null }, classification: c }]
+    })
 
     const clustered = await clusterClassifiedArticles(groqKey, items)
     result.tokensUsed += clustered.tokensUsed

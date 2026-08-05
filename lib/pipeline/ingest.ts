@@ -49,7 +49,7 @@ export async function runIngest(): Promise<RunResult> {
     console.log(`[ingest] ${fresh.length} fresh articles passed cache filter out of ${news.articles.length} fetched`)
 
     const since = new Date(Date.now() - INGEST.clusterWindowHours * 3_600_000).toISOString()
-    const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classification", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(60)
+    const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classified_at", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(60)
 
     const toClassifyMap = new Map<string, Article>(fresh.map((a) => [a.url, a]))
     for (const row of (unclassifiedRows ?? []) as any[]) {
@@ -62,13 +62,14 @@ export async function runIngest(): Promise<RunResult> {
     console.log(`[ingest] Calling classifyArticles with ${toClassify.length} articles (newest first)...`)
     const classifiedFresh = await classifyArticles(toClassify)
     warnings.push(...classifiedFresh.warnings); tokensUsed += classifiedFresh.tokensUsed
-    console.log(`[ingest] Classification results (${classifiedFresh.classified.length} classified, ${classifiedFresh.tokensUsed} tokens used):`, JSON.stringify(classifiedFresh.classified, null, 2))
+    console.log(`[ingest] Classification results (${classifiedFresh.classified.length} total, ${classifiedFresh.classified.filter(c => c.classification.kind !== 'none').length} valid ticker/sector, ${classifiedFresh.tokensUsed} tokens used)`)
 
     await updateClassifications(db, classifiedFresh.classified, warnings)
 
     const { data, error } = await db.from("article_cache").select("url, content_hash, headline, summary, outlet, published_at, classification, expires_at").not("classification", "is", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(500)
     if (error) warnings.push(`classified cache lookup failed: ${error.message}`)
-    const clustered = await clusterClassifiedArticles(cacheToClassified((data ?? []) as CacheRow[]))
+    const classifiedRows = cacheToClassified((data ?? []) as CacheRow[]).filter(c => c.classification.kind === "ticker" || c.classification.kind === "sector")
+    const clustered = await clusterClassifiedArticles(classifiedRows)
     events = clustered.events; tokensUsed += clustered.tokensUsed; warnings.push(...clustered.warnings)
   } catch (error) { errors.push(`news/cluster: ${error instanceof Error ? error.message : String(error)}`) }
   let storiesUpserted = 0; let sourcesUpserted = 0

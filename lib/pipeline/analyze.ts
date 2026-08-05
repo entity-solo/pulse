@@ -5,7 +5,11 @@ const allowedSymbols = new Set<string>(ALL_SYMBOLS)
 const sectors = ["tech", "finance", "energy", "macro"] as const
 type Sector = (typeof sectors)[number]
 type Sentiment = "bull" | "bear" | "neut"
-export type Classification = { kind: "ticker"; value: string; confidence: number; evidence: string } | { kind: "sector"; value: Sector; confidence: number; evidence: string }
+export type Classification =
+  | { kind: "ticker"; value: string; confidence: number; evidence: string }
+  | { kind: "sector"; value: Sector; confidence: number; evidence: string }
+  | { kind: "none" }
+
 export type ClassifiedArticle = { article: Article; classification: Classification }
 
 const aliases: Record<string, readonly string[]> = {
@@ -25,7 +29,7 @@ function sentiment(value: unknown): Sentiment { const label = String(value ?? ""
 function normalize(value: string) { return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() }
 function words(value: string) { return new Set(normalize(value).split(" ").filter((word) => word.length > 2 && !stopWords.has(word))) }
 function sharedWordsCount(left: string, right: string) { const a = words(left), b = words(right); let shared = 0; for (const word of a) if (b.has(word)) shared++; return shared }
-function overlap(left: string, right: string) { const a = words(left), b = words(right); if (!a.size || !b.size) return 0; let shared = 0; for (const word of a) if (b.has(word)) shared++; return shared / Math.max(1, Math.min(a.size, b.size)) }
+function overlap(left: string, right: string) { const a = words(left), b = words(right); if (!a.size || !b.size) return 0; let shared = 0; for (const w of a) if (b.has(w)) shared++; return shared / Math.max(1, Math.min(a.size, b.size)) }
 function isLexicallySimilar(left: string, right: string) { return sharedWordsCount(left, right) >= 3 && overlap(left, right) >= 0.40 }
 function titleSimilarity(left: string, right: string) { return overlap(left, right) }
 function slug(value: string) { return normalize(value).replace(/\s+/g, "-").slice(0, 80) }
@@ -54,7 +58,9 @@ function candidates(article: Article) {
 function catalogue(rows: Article[], candidateSets?: string[][]) { return rows.map((article, index) => `[${index}] candidates=${candidateSets?.[index]?.join(",") || "none"} ${article.headline}${article.summary ? ` — ${article.summary.slice(0, 350)}` : ""}`).join("\n") }
 
 export async function classifyArticles(articles: Article[]): Promise<{ classified: ClassifiedArticle[]; warnings: string[]; tokensUsed: number }> {
-  const warnings: string[] = []; const classified: ClassifiedArticle[] = []; const budget: Budget = { used: 0, limit: INGEST.classificationTokenBudget }
+  const warnings: string[] = []; const classifiedMap = new Map<string, ClassifiedArticle>()
+  articles.forEach((a) => classifiedMap.set(a.url, { article: a, classification: { kind: "none" } }))
+  const budget: Budget = { used: 0, limit: INGEST.classificationTokenBudget }
   for (let start = 0; start < articles.length; start += INGEST.classificationBatchSize) {
     const batch = articles.slice(start, start + INGEST.classificationBatchSize); const candidateSets = batch.map(candidates)
     try {
@@ -63,12 +69,13 @@ export async function classifyArticles(articles: Article[]): Promise<{ classifie
         if (!item || typeof item !== "object") continue; const row = item as Record<string, unknown>; const index = Number(row.index); if (!Number.isInteger(index) || !batch[index]) continue
         const kind = String(row.kind ?? "none").toLowerCase(), value = String(row.value ?? "").trim(), confidence = Number(row.confidence), evidence = String(row.evidence ?? "").trim(); const body = `${batch[index].headline} ${batch[index].summary}`.toLowerCase()
         if (!Number.isFinite(confidence) || confidence < INGEST.minimumClassificationConfidence || !evidence || !body.includes(evidence.toLowerCase())) { warnings.push(`discarded low-confidence/unsupported classification for ${batch[index].url}`); continue }
-        if (kind === "ticker" && candidateSets[index].includes(value.toUpperCase()) && allowedSymbols.has(value.toUpperCase())) classified.push({ article: batch[index], classification: { kind: "ticker", value: value.toUpperCase(), confidence, evidence } })
-        else if (kind === "sector" && (sectors as readonly string[]).includes(value.toLowerCase())) classified.push({ article: batch[index], classification: { kind: "sector", value: value.toLowerCase() as Sector, confidence, evidence } })
+        if (kind === "ticker" && candidateSets[index].includes(value.toUpperCase()) && allowedSymbols.has(value.toUpperCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "ticker", value: value.toUpperCase(), confidence, evidence } })
+        else if (kind === "sector" && (sectors as readonly string[]).includes(value.toLowerCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "sector", value: value.toLowerCase() as Sector, confidence, evidence } })
       }
     } catch (error) { warnings.push(`classification batch failed: ${error instanceof Error ? error.message : String(error)}`) }
   }
-  return { classified, warnings, tokensUsed: budget.used }
+  return { classified: Array.from(classifiedMap.values()), warnings, tokensUsed: budget.used }
+}
 }
 
 function lexicalClusters(items: ClassifiedArticle[]) {
