@@ -68,6 +68,21 @@ async function cacheArticles(db: Db, articles: Article[], warnings: string[]) {
     })
     const { error: writeError } = await db.from("article_cache").upsert(records, { onConflict: "url" })
     if (writeError) warnings.push(`article cache write failed: ${writeError.message}`)
+
+    // Generate embeddings for fresh articles via generate-embedding Edge Function
+    for (const article of fresh) {
+      try {
+        const text = `${article.headline}. ${article.summary}`
+        const { data, error: embError } = await db.functions.invoke("generate-embedding", {
+          body: { text },
+        })
+        if (!embError && data?.embedding) {
+          await db.from("article_cache").update({ embedding: data.embedding }).eq("url", article.url)
+        }
+      } catch (embErr: any) {
+        warnings.push(`embedding failed for ${article.url}: ${embErr?.message || String(embErr)}`)
+      }
+    }
   }
   return fresh
 }
@@ -172,6 +187,12 @@ export async function runAnalyzePipeline(): Promise<RunResult> {
     const { error: sourceError, count } = await db.from("story_sources").upsert(event.sources.map((source, index) => ({ story_id: story.id, outlet: source.article.outlet, headline: source.article.headline, excerpt: source.article.summary || source.article.headline, angle: source.angle, url: source.article.url, display_order: index + 1 })), { onConflict: "story_id,url", count: "exact" })
     if (sourceError) throw sourceError
     sourcesUpserted += count ?? event.sources.length
+
+    // Link cluster_id on article_cache to the story ID
+    const sourceUrls = event.sources.map((s) => s.article.url)
+    if (sourceUrls.length) {
+      await db.from("article_cache").update({ cluster_id: story.id }).in("url", sourceUrls)
+    }
     const upsertMs = Date.now() - tUpsertStart
     console.log(`[timing] DB upsert story (${event.ticker} - ${eventKey}): ${upsertMs}ms`)
   } catch (error) {

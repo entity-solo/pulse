@@ -806,6 +806,21 @@ Deno.serve(async (req) => {
         }
       })
       await db.from("article_cache").upsert(records, { onConflict: "url" })
+
+      // Generate embeddings for fresh articles via generate-embedding Edge Function
+      for (const article of fresh) {
+        try {
+          const text = `${article.headline}. ${article.summary}`
+          const { data, error: embError } = await db.functions.invoke("generate-embedding", {
+            body: { text },
+          })
+          if (!embError && data?.embedding) {
+            await db.from("article_cache").update({ embedding: data.embedding }).eq("url", article.url)
+          }
+        } catch (embErr: any) {
+          result.warnings.push(`embedding failed for ${article.url}: ${embErr?.message || String(embErr)}`)
+        }
+      }
     }
 
     const since = new Date(Date.now() - CONFIG.clusterWindowHours * 3_600_000).toISOString()
@@ -852,6 +867,11 @@ Deno.serve(async (req) => {
       const src = await db.from("story_sources").upsert(event.sources.map((s: any, i: number) => ({ story_id: story.data.id, outlet: s.article.outlet, headline: s.article.headline, excerpt: s.article.summary || s.article.headline, angle: s.angle, url: s.article.url, display_order: i + 1 })), { onConflict: "story_id,url", count: "exact" })
       if (src.error) throw src.error
       result.sourcesUpserted += src.count ?? event.sources.length
+
+      const sourceUrls = event.sources.map((s: any) => s.article.url)
+      if (sourceUrls.length) {
+        await db.from("article_cache").update({ cluster_id: story.data.id }).in("url", sourceUrls)
+      }
     } catch (e) {
       result.warnings.push(`cluster skipped: ${e}`)
     }
