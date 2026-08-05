@@ -76,20 +76,24 @@ export async function classifyArticles(articles: Article[]): Promise<{ classifie
   }
   return { classified: Array.from(classifiedMap.values()), warnings, tokensUsed: budget.used }
 }
-}
 
 function lexicalClusters(items: ClassifiedArticle[]) {
   const sorted = [...items].sort((a, b) => a.article.publishedAt.localeCompare(b.article.publishedAt)); const clusters: ClassifiedArticle[][] = []
   for (const item of sorted) {
+    if (item.classification.kind === "none") continue
     const target = `${item.classification.kind}:${item.classification.value}`; const text = `${item.article.headline} ${item.article.summary}`; let match: ClassifiedArticle[] | undefined
-    for (const cluster of clusters) { const first = cluster[0]; const sameTarget = `${first.classification.kind}:${first.classification.value}` === target; const withinWindow = Math.abs(new Date(first.article.publishedAt).getTime() - new Date(item.article.publishedAt).getTime()) <= INGEST.clusterWindowHours * 3_600_000; const similar = cluster.some((member) => isLexicallySimilar(text, `${member.article.headline} ${member.article.summary}`)); if (sameTarget && withinWindow && similar) { match = cluster; break } }
+    for (const cluster of clusters) {
+      const first = cluster[0]
+      if (first.classification.kind === "none") continue
+      const sameTarget = `${first.classification.kind}:${first.classification.value}` === target; const withinWindow = Math.abs(new Date(first.article.publishedAt).getTime() - new Date(item.article.publishedAt).getTime()) <= INGEST.clusterWindowHours * 3_600_000; const similar = cluster.some((member) => isLexicallySimilar(text, `${member.article.headline} ${member.article.summary}`)); if (sameTarget && withinWindow && similar) { match = cluster; break }
+    }
     ;(match ?? clusters[clusters.push([]) - 1]).push(item)
   }
   return clusters.filter((cluster) => new Set(cluster.map((item) => item.article.outlet)).size >= INGEST.minSourcesPerStory)
 }
 
 async function analyzeCluster(cluster: ClassifiedArticle[], budget: Budget): Promise<ClusteredEvent> {
-  const classification = cluster[0].classification; const result = await groqJson(ANALYSIS_MODEL, `Return only JSON: {"event_label":"concise canonical event label","title":"neutral factual title","summary":"one or two sentences","sentiment":"bull|bear|neut","impact_reason":"why it matters to markets","source_angles":["bull|bear|neut"]}. All articles are already lexically pre-clustered, but reject any mismatch by returning event_label="none". Use only supplied sources.`, catalogue(cluster.map((item) => item.article)), budget, INGEST.analysisMaxTokens) as Record<string, unknown>
+  const classification = cluster[0].classification as Exclude<Classification, { kind: "none" }>; const result = await groqJson(ANALYSIS_MODEL, `Return only JSON: {"event_label":"concise canonical event label","title":"neutral factual title","summary":"one or two sentences","sentiment":"bull|bear|neut","impact_reason":"why it matters to markets","source_angles":["bull|bear|neut"]}. All articles are already lexically pre-clustered, but reject any mismatch by returning event_label="none". Use only supplied sources.`, catalogue(cluster.map((item) => item.article)), budget, INGEST.analysisMaxTokens) as Record<string, unknown>
   const label = String(result.event_label ?? "").trim(); const title = String(result.title ?? "").trim(); const summary = String(result.summary ?? "").trim(); const impact = String(result.impact_reason ?? "").trim(); if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
   const bucket = windowBucket(cluster[0].article.publishedAt); const isMacro = classification.kind === "sector"; const ticker = isMacro ? sectorTicker[classification.value] : classification.value; const sources = cluster.slice(0, INGEST.maxSourcesPerStory).map((item, index) => ({ article: item.article, angle: Array.isArray(result.source_angles) ? sentiment(result.source_angles[index]) : "neut" as Sentiment }))
   return { event_key: slug(`${ticker}-${bucket}-${label}`), event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((earliest, source) => source.article.publishedAt < earliest ? source.article.publishedAt : earliest, sources[0].article.publishedAt) }

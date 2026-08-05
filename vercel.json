@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/quotes",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/ingest",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/analyze",
+      "schedule": "1-56/15 * * * *"
+    }
+  ]
+}

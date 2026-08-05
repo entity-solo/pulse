@@ -121,7 +121,7 @@ async function fetchFeed(feed: (typeof RSS_FEEDS)[number]) {
 }
 
 /** Pulls major-outlet RSS feeds and returns a de-duplicated, recent batch. */
-export async function fetchArticles(knownUrls: Set<string>): Promise<{ articles: Article[]; errors: string[] }> {
+export async function fetchArticles(knownUrls: Set<string> = new Set(), limit?: number): Promise<{ articles: Article[]; errors: string[] }> {
   const collected: Article[] = []; const errors: string[] = []; const results = await Promise.allSettled(RSS_FEEDS.map(fetchFeed))
   results.forEach((result, index) => { if (result.status === "fulfilled") collected.push(...result.value); else errors.push(`${RSS_FEEDS[index].outlet}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`) })
   const urls = new Set<string>(), headlines = new Set<string>(), articles: Article[] = []
@@ -131,11 +131,11 @@ export async function fetchArticles(knownUrls: Set<string>): Promise<{ articles:
     urls.add(article.url)
     headlines.add(key)
     articles.push(article)
-    if (articles.length >= INGEST.maxArticlesPerRun) break
+    if (limit && articles.length >= limit) break
   }
 
   const newest5 = articles.slice(0, 5).map((a) => `${a.publishedAt} | [${a.outlet}] ${a.headline}`)
-  console.log(`[news] Top 5 newest RSS articles fetched:\n` + newest5.map((line) => `  - ${line}`).join("\n"))
+  console.log(`[news] Top 5 newest RSS articles fetched (${articles.length} total):\n` + newest5.map((line) => `  - ${line}`).join("\n"))
 
   return { articles, errors }
 }

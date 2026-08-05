@@ -109,10 +109,10 @@ const CONFIG = {
 
 type Article = { headline: string; summary: string; outlet: string; url: string; publishedAt: string; relatedSymbol: string | null }
 type Sentiment = "bull" | "bear" | "neut"
-type ClassifiedArticle = { article: Article; classification: { kind: "ticker" | "sector"; value: string; confidence: number; evidence: string } }
+type ClassifiedArticle = { article: Article; classification: { kind: "ticker" | "sector" | "none"; value?: string; confidence?: number; evidence?: string } }
 type ClusteredEvent = { event_key: string; event_label: string; ticker: string; is_macro: boolean; sentiment: Sentiment; title: string; summary: string; sources: Array<{ article: Article; angle: Sentiment }>; publishedAt: string }
 type Budget = { used: number; limit: number }
-type Result = { status: "ok" | "partial" | "error"; quotesUpdated: number; articlesSeen: number; storiesUpserted: number; sourcesUpserted: number; tokensUsed: number; errors: string[]; warnings: string[] }
+type Result = { job: string; status: "ok" | "partial" | "error"; quotesUpdated: number; articlesSeen: number; storiesUpserted: number; sourcesUpserted: number; tokensUsed: number; errors: string[]; warnings: string[] }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -147,11 +147,16 @@ function sharedWordsCount(left: string, right: string) { const a = words(left), 
 function overlap(left: string, right: string) { const a = words(left), b = words(right); if (!a.size || !b.size) return 0; let shared = 0; for (const w of a) if (b.has(w)) shared++; return shared / Math.max(1, Math.min(a.size, b.size)) }
 function isLexicallySimilar(left: string, right: string) { return sharedWordsCount(left, right) >= 3 && overlap(left, right) >= 0.40 }
 function titleSimilarity(left: string, right: string) { return overlap(left, right) }
-function sentiment(value: unknown): Sentiment { const label = String(value ?? "").toLowerCase(); return ["bull", "bullish", "positive"].includes(label) ? "bull" : ["bear", "bearish", "negative"].includes(label) ? "bear" : "neut" }
-function slug(value: string) { return normalize(value).replace(/\s+/g, "-").slice(0, 80) }
 function hash(value: string) { let h = 2_166_136_261; for (let i = 0; i < value.length; i++) { h ^= value.charCodeAt(i); h = Math.imul(h, 16_777_619) } return (h >>> 0).toString(16) }
 function articleHash(a: Article) { return hash(`${a.url}\n${a.headline}\n${a.summary}`) }
 function windowBucket(d: string) { return Math.floor(new Date(d).getTime() / (CONFIG.clusterWindowHours * 3_600_000)) }
+
+function deriveDeterministicEventKey(ticker: string, sourceUrls: string[]): string {
+  const sortedUrls = [...sourceUrls].sort().join("|")
+  const keyHash = hash(`${ticker}:${sortedUrls}`)
+  const cleanTicker = ticker.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+  return `${cleanTicker}-${keyHash}`
+}
 
 function parseJson(text: string) { const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""); const start = trimmed.indexOf("{"); const end = trimmed.lastIndexOf("}"); return JSON.parse(start >= 0 && end >= start ? trimmed.slice(start, end + 1) : trimmed) }
 
@@ -177,9 +182,7 @@ async function groqJson(apiKey: string, model: string, system: string, prompt: s
     }),
     signal: AbortSignal.timeout(10_000)
   })
-  if (response.status === 429) {
-    throw new Error("Groq 429 rate limit reached (will retry on next run)")
-  }
+  if (response.status === 429) throw new Error("Groq 429 rate limit reached (will retry on next run)")
   if (!response.ok) throw new Error(`Groq ${response.status}: ${await response.text()}`)
   const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { total_tokens?: number } }
   budget.used += data.usage?.total_tokens ?? estimated
@@ -261,7 +264,6 @@ async function fetchArticles(): Promise<{ articles: Article[]; errors: string[] 
     urls.add(article.url)
     headlines.add(key)
     articles.push(article)
-    if (articles.length >= CONFIG.maxArticlesPerRun) break
   }
 
   return { articles, errors }
@@ -305,7 +307,7 @@ async function fetchQuotes(finnhubKey: string) {
 
 async function classify(groqKey: string, rows: Article[], budget: Budget, warnings: string[]) {
   const classifiedMap = new Map<string, ClassifiedArticle>()
-  rows.forEach((a) => classifiedMap.set(a.url, { article: a, classification: { kind: "none", value: "", confidence: 0, evidence: "" } as any }))
+  rows.forEach((a) => classifiedMap.set(a.url, { article: a, classification: { kind: "none" } }))
   for (let start = 0; start < rows.length; start += CONFIG.classificationBatchSize) {
     const batch = rows.slice(start, start + CONFIG.classificationBatchSize)
     const candidateSets = batch.map(candidates)
@@ -351,16 +353,18 @@ function lexicalClusters(items: ClassifiedArticle[]) {
   return clusters.filter((cluster) => new Set(cluster.map((item) => item.article.outlet)).size >= CONFIG.minSourcesPerStory)
 }
 
+function sentiment(value: unknown): Sentiment { const label = String(value ?? "").toLowerCase(); return ["bull", "bullish", "positive"].includes(label) ? "bull" : ["bear", "bearish", "negative"].includes(label) ? "bear" : "neut" }
+
 async function analyzeCluster(groqKey: string, cluster: ClassifiedArticle[], budget: Budget): Promise<ClusteredEvent> {
   const classification = cluster[0].classification
   const result = await groqJson(groqKey, "openai/gpt-oss-120b", `Return only JSON: {"event_label":"concise canonical event label","title":"neutral factual title","summary":"one or two sentences","sentiment":"bull|bear|neut","impact_reason":"why it matters to markets","source_angles":["bull|bear|neut"]}. All articles are already lexically pre-clustered, but reject any mismatch by returning event_label="none". Use only supplied sources.`, catalogue(cluster.map((item) => item.article)), budget, CONFIG.analysisMaxTokens) as Record<string, unknown>
   const label = String(result.event_label ?? "").trim(), title = String(result.title ?? "").trim(), summary = String(result.summary ?? "").trim(), impact = String(result.impact_reason ?? "").trim()
   if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
-  const bucket = windowBucket(cluster[0].article.publishedAt)
   const isMacro = classification.kind === "sector"
-  const ticker = isMacro ? SECTOR_TICKER[classification.value] : classification.value
+  const ticker = isMacro ? SECTOR_TICKER[classification.value!] : classification.value!
   const sources = cluster.slice(0, CONFIG.maxSourcesPerStory).map((item, index) => ({ article: item.article, angle: Array.isArray(result.source_angles) ? sentiment(result.source_angles[index]) : "neut" as Sentiment }))
-  return { event_key: slug(`${ticker}-${bucket}-${label}`), event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((earliest, source) => source.article.publishedAt < earliest ? source.article.publishedAt : earliest, sources[0].article.publishedAt) }
+  const event_key = deriveDeterministicEventKey(ticker, sources.map((s) => s.article.url))
+  return { event_key, event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((earliest, source) => source.article.publishedAt < earliest ? source.article.publishedAt : earliest, sources[0].article.publishedAt) }
 }
 
 export async function clusterClassifiedArticles(groqKey: string, items: ClassifiedArticle[]): Promise<{ events: ClusteredEvent[]; warnings: string[]; tokensUsed: number }> {
@@ -392,10 +396,138 @@ Deno.serve(async (req) => {
     return Response.json({ error: "unauthorized" }, { status: 401 })
   }
 
+  const url = new URL(req.url)
+  let requestedJob = url.searchParams.get("job") || ""
+  if (!requestedJob && req.method === "POST") {
+    try {
+      const body = await req.json()
+      if (body?.job) requestedJob = String(body.job)
+    } catch {}
+  }
+
   const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } })
-  const result: Result = { status: "ok", quotesUpdated: 0, articlesSeen: 0, storiesUpserted: 0, sourcesUpserted: 0, tokensUsed: 0, errors: [], warnings: [] }
   const startedAt = new Date().toISOString()
   const groqKey = Deno.env.get("GROQ_API_KEY")!
+
+  // JOB 1: quotes:sync
+  if (requestedJob === "quotes" || requestedJob === "quotes:sync") {
+    const result: Result = { job: "quotes:sync", status: "ok", quotesUpdated: 0, articlesSeen: 0, storiesUpserted: 0, sourcesUpserted: 0, tokensUsed: 0, errors: [], warnings: [] }
+    try {
+      const q = await fetchQuotes(Deno.env.get("FINNHUB_API_KEY")!)
+      result.errors.push(...q.errors)
+      const writes = await Promise.all(q.rows.map((r: any) => db.from("tickers").update({ price: r.price, change_pct: r.change_pct, direction: r.direction, updated_at: new Date().toISOString() }, { count: "exact" }).eq("symbol", r.symbol)))
+      writes.forEach((w: any) => w.error ? result.errors.push(w.error.message) : result.quotesUpdated += w.count ?? 0)
+    } catch (e) {
+      result.errors.push(e instanceof Error ? e.message : String(e))
+    }
+    result.status = result.errors.length ? (result.quotesUpdated ? "partial" : "error") : "ok"
+    await db.from("ingest_runs").insert({ job: result.job, status: result.status, started_at: startedAt, finished_at: new Date().toISOString(), quotes_updated: result.quotesUpdated, articles_seen: 0, stories_upserted: 0, sources_upserted: 0, detail: { errors: result.errors.slice(0, 25), warnings: result.warnings.slice(0, 25), tokens_used: 0 } })
+    return Response.json(result, { status: result.status === "error" ? 500 : 200 })
+  }
+
+  // JOB 2: news:ingest
+  if (requestedJob === "ingest" || requestedJob === "news:ingest") {
+    const result: Result = { job: "news:ingest", status: "ok", quotesUpdated: 0, articlesSeen: 0, storiesUpserted: 0, sourcesUpserted: 0, tokensUsed: 0, errors: [], warnings: [] }
+    try {
+      const feed = await fetchArticles()
+      result.errors.push(...feed.errors)
+      result.articlesSeen = feed.articles.length
+
+      const now = new Date(), expiresAt = new Date(now.getTime() + 7 * 86_400_000).toISOString()
+      const { data: cached } = await db.from("article_cache").select("url, content_hash, expires_at").in("url", feed.articles.map((a) => a.url))
+      const cachedMap = new Map((cached ?? []).map((r: any) => [r.url, r]))
+      const fresh = feed.articles.filter((a) => {
+        const r: any = cachedMap.get(a.url)
+        return !r || r.content_hash !== articleHash(a) || new Date(r.expires_at) <= now
+      })
+
+      if (fresh.length) {
+        const records = fresh.map((a) => {
+          const passes = passesPreFilters(a.headline, a.summary, a.url)
+          return {
+            url: a.url,
+            content_hash: articleHash(a),
+            headline: a.headline,
+            summary: a.summary,
+            outlet: a.outlet,
+            published_at: a.publishedAt,
+            fetched_at: now.toISOString(),
+            expires_at: expiresAt,
+            classification: passes ? null : { kind: "none" },
+            classified_at: passes ? null : now.toISOString(),
+            classification_attempted_at: passes ? null : now.toISOString(),
+            updated_at: now.toISOString(),
+          }
+        })
+        await db.from("article_cache").upsert(records, { onConflict: "url" })
+      }
+    } catch (e) {
+      result.errors.push(e instanceof Error ? e.message : String(e))
+    }
+    result.status = result.errors.length ? "partial" : "ok"
+    await db.from("ingest_runs").insert({ job: result.job, status: result.status, started_at: startedAt, finished_at: new Date().toISOString(), quotes_updated: 0, articles_seen: result.articlesSeen, stories_upserted: 0, sources_upserted: 0, detail: { errors: result.errors.slice(0, 25), warnings: result.warnings.slice(0, 25), tokens_used: 0 } })
+    return Response.json(result, { status: result.status === "error" ? 500 : 200 })
+  }
+
+  // JOB 3: pipeline:analyze
+  if (requestedJob === "analyze" || requestedJob === "pipeline:analyze") {
+    const result: Result = { job: "pipeline:analyze", status: "ok", quotesUpdated: 0, articlesSeen: 0, storiesUpserted: 0, sourcesUpserted: 0, tokensUsed: 0, errors: [], warnings: [] }
+    const budget: Budget = { used: 0, limit: CONFIG.classificationTokenBudget }
+    try {
+      const since = new Date(Date.now() - CONFIG.clusterWindowHours * 3_600_000).toISOString()
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 3_600_000).toISOString()
+      const { data: unclassifiedRows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at").is("classified_at", null).or(`classification_attempted_at.is.null,classification_attempted_at.lt.${twentyFourHoursAgo}`).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(60)
+
+      const toClassify: Article[] = ((unclassifiedRows ?? []) as any[]).flatMap((row) => passesPreFilters(row.headline, row.summary || "", row.url) ? [{ url: row.url, headline: row.headline, summary: row.summary, outlet: row.outlet, publishedAt: row.published_at, relatedSymbol: null }] : [])
+
+      if (toClassify.length) {
+        for (let start = 0; start < toClassify.length; start += CONFIG.classificationBatchSize) {
+          const batch = toClassify.slice(start, start + CONFIG.classificationBatchSize)
+          const attemptNow = new Date().toISOString()
+          await db.from("article_cache").update({ classification_attempted_at: attemptNow, updated_at: attemptNow }).in("url", batch.map((a) => a.url))
+          const classifiedFresh = await classify(groqKey, batch, budget, result.warnings)
+          result.tokensUsed += budget.used
+          await Promise.all(classifiedFresh.map((x) => db.from("article_cache").update({ classification: x.classification, classified_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("url", x.article.url)))
+        }
+      }
+
+      const { data: rows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at, classification").not("classification", "is", null).not("classified_at", "is", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(500)
+      const items: ClassifiedArticle[] = (rows ?? []).flatMap((r: any) => {
+        const c = r.classification
+        if (!c || typeof c !== "object" || c.kind === "none") return []
+        return [{ article: { url: r.url, headline: r.headline, summary: r.summary, outlet: r.outlet, publishedAt: r.published_at, relatedSymbol: null }, classification: c }]
+      })
+
+      const clustered = await clusterClassifiedArticles(groqKey, items)
+      result.tokensUsed += clustered.tokensUsed
+      result.warnings.push(...clustered.warnings)
+
+      for (const event of clustered.events) try {
+        const { data: recent } = await db.from("stories").select("event_key, title").eq("ticker", event.ticker).gte("published_at", new Date(Date.now() - 7 * 86_400_000).toISOString()).limit(100)
+        const existing = (recent ?? []).find((r: any) => r.event_key === event.event_key || titleSimilarity(event.title, String(r.title ?? "")) >= 0.75)
+        if (existing) event.event_key = existing.event_key
+
+        const story = await db.from("stories").upsert({ event_key: event.event_key, ticker: event.ticker, is_macro: event.is_macro, sentiment: event.sentiment, title: event.title, summary: event.summary, published_at: event.publishedAt }, { onConflict: "event_key" }).select("id").single()
+        if (story.error) throw story.error
+        result.storiesUpserted++
+
+        const src = await db.from("story_sources").upsert(event.sources.map((s: any, i: number) => ({ story_id: story.data.id, outlet: s.article.outlet, headline: s.article.headline, excerpt: s.article.summary || s.article.headline, angle: s.angle, url: s.article.url, display_order: i + 1 })), { onConflict: "story_id,url", count: "exact" })
+        if (src.error) throw src.error
+        result.sourcesUpserted += src.count ?? event.sources.length
+      } catch (e) {
+        result.warnings.push(`cluster skipped: ${e}`)
+      }
+    } catch (e) {
+      result.errors.push(e instanceof Error ? e.message : String(e))
+    }
+
+    result.status = result.errors.length ? (result.storiesUpserted ? "partial" : "error") : "ok"
+    await db.from("ingest_runs").insert({ job: result.job, status: result.status, started_at: startedAt, finished_at: new Date().toISOString(), quotes_updated: 0, articles_seen: 0, stories_upserted: result.storiesUpserted, sources_upserted: result.sourcesUpserted, detail: { errors: result.errors.slice(0, 25), warnings: result.warnings.slice(0, 25), tokens_used: result.tokensUsed } })
+    return Response.json(result, { status: result.status === "error" ? 500 : 200 })
+  }
+
+  // DEFAULT: run all 3 sequentially
+  const result: Result = { job: "ingest", status: "ok", quotesUpdated: 0, articlesSeen: 0, storiesUpserted: 0, sourcesUpserted: 0, tokensUsed: 0, errors: [], warnings: [] }
   const budget: Budget = { used: 0, limit: CONFIG.classificationTokenBudget }
 
   try {
@@ -415,7 +547,6 @@ Deno.serve(async (req) => {
       const r: any = cachedMap.get(a.url)
       return !r || r.content_hash !== articleHash(a) || new Date(r.expires_at) <= now
     })
-    fresh.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
 
     if (fresh.length) {
       const records = fresh.map((a) => {
@@ -454,13 +585,12 @@ Deno.serve(async (req) => {
     if (toClassify.length) {
       const attemptNow = new Date().toISOString()
       await db.from("article_cache").update({ classification_attempted_at: attemptNow, updated_at: attemptNow }).in("url", toClassify.map((a) => a.url))
+      const classifiedFresh = await classify(groqKey, toClassify, budget, result.warnings)
+      result.tokensUsed += budget.used
+      await Promise.all(classifiedFresh.map((x) => db.from("article_cache").update({ classification: x.classification, classified_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("url", x.article.url)))
     }
 
-    const classifiedFresh = await classify(groqKey, toClassify, budget, result.warnings)
-    result.tokensUsed += budget.used
-    await Promise.all(classifiedFresh.map((x) => db.from("article_cache").update({ classification: x.classification, classified_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("url", x.article.url)))
-
-    const { data: rows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at, classification").not("classification", "is", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(500)
+    const { data: rows } = await db.from("article_cache").select("url, headline, summary, outlet, published_at, classification").not("classification", "is", null).not("classified_at", "is", null).gte("published_at", since).gte("expires_at", new Date().toISOString()).order("published_at", { ascending: false }).limit(500)
     const items: ClassifiedArticle[] = (rows ?? []).flatMap((r: any) => {
       const c = r.classification
       if (!c || typeof c !== "object" || c.kind === "none") return []
@@ -491,6 +621,6 @@ Deno.serve(async (req) => {
   }
 
   result.status = result.errors.length ? (result.quotesUpdated || result.storiesUpserted ? "partial" : "error") : "ok"
-  await db.from("ingest_runs").insert({ job: "supabase:sync", status: result.status, started_at: startedAt, finished_at: new Date().toISOString(), quotes_updated: result.quotesUpdated, articles_seen: result.articlesSeen, stories_upserted: result.storiesUpserted, sources_upserted: result.sourcesUpserted, detail: { errors: result.errors.slice(0, 25), warnings: result.warnings.slice(0, 25), tokens_used: result.tokensUsed } })
+  await db.from("ingest_runs").insert({ job: result.job, status: result.status, started_at: startedAt, finished_at: new Date().toISOString(), quotes_updated: result.quotesUpdated, articles_seen: result.articlesSeen, stories_upserted: result.storiesUpserted, sources_upserted: result.sourcesUpserted, detail: { errors: result.errors.slice(0, 25), warnings: result.warnings.slice(0, 25), tokens_used: result.tokensUsed } })
   return Response.json(result, { status: result.status === "error" ? 500 : 200 })
 })
