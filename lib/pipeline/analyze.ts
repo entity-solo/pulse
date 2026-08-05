@@ -126,14 +126,28 @@ async function groqJson(model: string, system: string, prompt: string, budget: B
   throw new Error("Groq rate limit retry budget exhausted")
 }
 
+import { US_EQUITIES_SYMBOLS, US_EQUITIES_TICKERS } from "./markets/us-equities"
+
+const tickerSectorMap = new Map<string, string>(
+  US_EQUITIES_TICKERS.map((t) => [t.symbol, t.sector])
+)
+
+function formatCandidates(candidateSymbols: string[]): string {
+  if (!candidateSymbols.length) return "none"
+  return candidateSymbols.map((sym) => `${sym}(${tickerSectorMap.get(sym) || "tech"})`).join(",")
+}
+
 function candidates(article: Article): string[] {
   return defaultRegistry.getCandidates(article.headline, article.summary || "")
 }
-function catalogue(rows: Article[], candidateSets?: string[][]) { return rows.map((article, index) => `[${index}] candidates=${candidateSets?.[index]?.join(",") || "none"} ${article.headline}${article.summary ? ` — ${article.summary.slice(0, 100)}` : ""}`).join("\n") }
+function catalogue(rows: Article[], candidateSets?: string[][]) {
+  return rows.map((article, index) => {
+    const candidateStr = candidateSets?.[index] ? formatCandidates(candidateSets[index]) : "none"
+    return `[${index}] candidates=${candidateStr} ${article.headline}${article.summary ? ` — ${article.summary.slice(0, 100)}` : ""}`
+  }).join("\n")
+}
 
-import { TOP100_SYMBOLS } from "./sp500"
-
-const top100SymbolSet = new Set<string>(TOP100_SYMBOLS)
+const top100SymbolSet = new Set<string>(US_EQUITIES_SYMBOLS)
 
 /** Sorts articles so named company tickers come before macro news, ordered by recency. */
 export function prioritizeArticles(articles: Article[]): Article[] {

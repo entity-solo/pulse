@@ -1,8 +1,26 @@
+import { MACRO_SYMBOL_MAP } from "../config"
+import { US_EQUITIES_ALIASES, US_EQUITIES_SYMBOLS, US_EQUITIES_TICKERS } from "../markets/us-equities"
 import { FinnhubQuoteProvider } from "./finnhub-quotes"
 import { RssNewsProvider } from "./rss-news"
 import { Sp500TickerUniverse } from "./sp500-universe"
 import type { INewsProvider, IQuoteProvider, ITickerUniverse } from "./types"
 import { YahooMacroQuoteProvider } from "./yahoo-macro-quotes"
+
+export const MARKETS = {
+  US_EQUITIES: {
+    id: "us_equities",
+    name: "US S&P 500 Equities (Finnhub)",
+    symbols: US_EQUITIES_SYMBOLS,
+    aliases: US_EQUITIES_ALIASES,
+    tickers: US_EQUITIES_TICKERS,
+  },
+  MACRO: {
+    id: "macro",
+    name: "Global Macro Indices & Spot Rates",
+    symbolMap: MACRO_SYMBOL_MAP,
+    symbols: Object.keys(MACRO_SYMBOL_MAP),
+  },
+} as const
 
 export class ProviderRegistry {
   private quoteProviders: IQuoteProvider[] = []

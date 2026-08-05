@@ -1,4 +1,4 @@
-import { TOP100_ALIASES, TOP100_SYMBOLS } from "../sp500"
+import { US_EQUITIES_ALIASES, US_EQUITIES_SYMBOLS } from "../markets/us-equities"
 import type { ITickerUniverse } from "./types"
 
 function normalize(value: string): string {
@@ -9,16 +9,16 @@ export class Sp500TickerUniverse implements ITickerUniverse {
   readonly market = "us_sp500"
 
   getSymbols(): string[] {
-    return [...TOP100_SYMBOLS]
+    return [...US_EQUITIES_SYMBOLS]
   }
 
   getAliases(): Record<string, readonly string[]> {
-    return TOP100_ALIASES
+    return US_EQUITIES_ALIASES
   }
 
   getCandidates(headline: string, summary: string): string[] {
     const text = ` ${normalize(`${headline} ${summary}`)} `
-    return Object.entries(TOP100_ALIASES).flatMap(([ticker, names]) =>
+    return Object.entries(US_EQUITIES_ALIASES).flatMap(([ticker, names]) =>
       names.some((name) => text.includes(` ${normalize(name)} `)) ? [ticker] : []
     )
   }

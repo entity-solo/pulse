@@ -264,7 +264,19 @@ function candidates(article: Article) {
   return Object.entries(ALIASES).flatMap(([ticker, names]) => names.some((name) => text.includes(` ${normalize(name)} `)) ? [ticker] : [])
 }
 
-function catalogue(rows: Article[], candidateSets?: string[][]) { return rows.map((article, index) => `[${index}] candidates=${candidateSets?.[index]?.join(",") || "none"} ${article.headline}${article.summary ? ` — ${article.summary.slice(0, 100)}` : ""}`).join("\n") }
+const TICKER_SECTOR: Record<string, string> = { AAPL: "tech", MSFT: "tech", NVDA: "tech", AMZN: "tech", GOOGL: "tech", META: "tech", TSLA: "consumer", "BRK.B": "finance", LLY: "healthcare", AVGO: "tech", JPM: "finance", WMT: "consumer", UNH: "healthcare", V: "finance", XOM: "energy", MA: "finance", ORCL: "tech", COST: "consumer", HD: "consumer", PG: "consumer", JNJ: "healthcare", NFLX: "tech", BAC: "finance", ABBV: "healthcare", CRM: "tech", CVX: "energy", WFC: "finance", KO: "consumer", CSCO: "tech", PEP: "consumer", IBM: "tech", MS: "finance", ACN: "tech", MCD: "consumer", DIS: "media", GE: "industrials", INTU: "tech", QCOM: "tech", CAT: "industrials", AMD: "tech", TXN: "tech", BKNG: "consumer", AMAT: "tech", PFE: "healthcare", NOW: "tech", AMGN: "healthcare", C: "finance", GS: "finance", COP: "energy", HON: "industrials", BA: "industrials", ADP: "tech", NKE: "consumer", ADBE: "tech", BX: "finance", PLTR: "tech", MU: "tech", SBUX: "consumer", PANW: "tech", UPS: "industrials" }
+
+function formatCandidates(candidateSymbols: string[]): string {
+  if (!candidateSymbols.length) return "none"
+  return candidateSymbols.map((sym) => `${sym}(${TICKER_SECTOR[sym] || "tech"})`).join(",")
+}
+
+function catalogue(rows: Article[], candidateSets?: string[][]) {
+  return rows.map((article, index) => {
+    const candidateStr = candidateSets?.[index] ? formatCandidates(candidateSets[index]) : "none"
+    return `[${index}] candidates=${candidateStr} ${article.headline}${article.summary ? ` — ${article.summary.slice(0, 100)}` : ""}`
+  }).join("\n")
+}
 
 class TokenRateLimiter {
   private history: Array<{ timestamp: number; tokens: number }> = []
