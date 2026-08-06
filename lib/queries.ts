@@ -22,7 +22,11 @@ export async function getStories(sector?: Sector) {
   const supabase = await createClient()
   let query = supabase.from("stories").select(STORY_SELECT).order("published_at", { ascending: false }).limit(40)
 
-  if (sector) query = query.eq("tickers.sector", sector)
+  if (sector === "macro") {
+    query = query.in("tickers.sector", ["macro", "index", "commodity"])
+  } else if (sector) {
+    query = query.eq("tickers.sector", sector)
+  }
 
   const { data, error } = await query
   if (error) throw error

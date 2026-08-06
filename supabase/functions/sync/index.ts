@@ -1084,7 +1084,7 @@ STRICT CONSTRAINTS:
 
   const prompt = `Ticker target: ${ticker}. Outlets covering this cluster: ${outletsList}.\nSupplied articles:\n${catalogue(cluster.map((item) => item.article))}`
 
-  const result = await groqJson(groqKey, "llama-3.3-70b-versatile", system, prompt, budget, CONFIG.analysisMaxTokens) as Record<string, unknown>
+  const result = await groqJson(groqKey, "llama-3.1-8b-instant", system, prompt, budget, CONFIG.analysisMaxTokens) as Record<string, unknown>
   const label = String(result.event_label ?? "").trim(), title = String(result.title ?? "").trim(), summary = String(result.summary ?? "").trim(), impact = String(result.impact_reason ?? "").trim()
   if (!label || label.toLowerCase() === "none" || !title || !summary || !impact) throw new Error("analysis rejected or incomplete")
   const sources = cluster.slice(0, CONFIG.maxSourcesPerStory).map((item, index) => ({ article: item.article, angle: Array.isArray(result.source_angles) ? sentiment(result.source_angles[index]) : "neut" as Sentiment }))
