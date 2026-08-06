@@ -6,6 +6,8 @@ import { StoryCard } from "@/components/story-card"
 import { TickerBar } from "@/components/ticker-bar"
 import { getStoriesForTickers, getTickersBySymbols, getWatchlistSymbols, TICKER_BAR_SYMBOLS } from "@/lib/queries"
 
+export const dynamic = "force-dynamic"
+
 export default async function WatchlistPage() {
   const { user, symbols } = await getWatchlistSymbols()
   if (!user) redirect("/login?next=/watchlist")

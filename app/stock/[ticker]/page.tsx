@@ -14,6 +14,8 @@ import {
 } from "@/lib/queries"
 import { formatChange, formatPrice } from "@/lib/types"
 
+export const dynamic = "force-dynamic"
+
 export default async function StockPage({ params }: { params: Promise<{ ticker: string }> }) {
   const { ticker: raw } = await params
   const symbol = decodeURIComponent(raw).toUpperCase()

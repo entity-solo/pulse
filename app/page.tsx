@@ -6,6 +6,8 @@ import { TickerBar } from "@/components/ticker-bar"
 import { getStories, getTickersBySymbols, TICKER_BAR_SYMBOLS } from "@/lib/queries"
 import type { Sector } from "@/lib/types"
 
+export const dynamic = "force-dynamic"
+
 const SECTORS = ["tech", "finance", "energy", "macro"] as const
 
 export default async function HomePage({
