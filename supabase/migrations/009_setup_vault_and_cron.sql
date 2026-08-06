@@ -2,11 +2,17 @@
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
--- Insert or update Vault secrets
-INSERT INTO vault.secrets (name, secret) VALUES
-  ('pulse_sync_project_url', 'https://sjmepvtccpsktedqmgfl.supabase.co'),
-  ('pulse_sync_cron_secret', 'pulse-cron-secret-2024')
-ON CONFLICT (name) DO UPDATE SET secret = EXCLUDED.secret;
+-- Create vault secrets via Vault helper functions
+do $$
+begin
+  if not exists (select 1 from vault.decrypted_secrets where name = 'pulse_sync_project_url') then
+    perform vault.create_secret('https://sjmepvtccpsktedqmgfl.supabase.co', 'pulse_sync_project_url');
+  end if;
+
+  if not exists (select 1 from vault.decrypted_secrets where name = 'pulse_sync_cron_secret') then
+    perform vault.create_secret('pulse-cron-secret-2024', 'pulse_sync_cron_secret');
+  end if;
+end $$;
 
 -- Job 1: news:ingest (every 15 minutes: */15 * * * *)
 SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'pulse-sync-ingest-every-15-minutes';
