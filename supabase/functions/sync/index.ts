@@ -1225,7 +1225,15 @@ Deno.serve(async (req) => {
           await db.from("article_cache").update({ classification_attempted_at: attemptNow, updated_at: attemptNow }).in("url", batch.map((a) => a.url))
           const classifiedFresh = await classify(groqKey, batch, budget, result.warnings)
           result.tokensUsed += budget.used
-          await Promise.all(classifiedFresh.map((x) => db.from("article_cache").update({ classification: x.classification, classified_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("url", x.article.url)))
+          const validMap = new Map(classifiedFresh.map((x) => [x.article.url, x]))
+          const validUrls = Array.from(validMap.keys())
+          const noneUrls = batch.map((a) => a.url).filter((url) => !validMap.has(url) || validMap.get(url)?.classification.kind === "none")
+          if (noneUrls.length) {
+            await db.from("article_cache").delete().in("url", noneUrls)
+          }
+          if (validUrls.length) {
+            await Promise.all(Array.from(validMap.values()).map((x) => db.from("article_cache").update({ classification: x.classification, classified_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("url", x.article.url)))
+          }
         }
       }
 

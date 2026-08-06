@@ -227,7 +227,14 @@ export async function runAnalyzePipeline(): Promise<RunResult> {
         const classifiedBatch = await classifyArticles(batch)
         warnings.push(...classifiedBatch.warnings)
         tokensUsed += classifiedBatch.tokensUsed
-        await updateClassifications(db, classifiedBatch.classified, warnings)
+        const validMap = new Map(classifiedBatch.classified.map((x) => [x.article.url, x]))
+        const noneUrls = batch.map((a) => a.url).filter((url) => !validMap.has(url) || validMap.get(url)?.classification.kind === "none")
+        if (noneUrls.length) {
+          await db.from("article_cache").delete().in("url", noneUrls)
+        }
+        if (validMap.size) {
+          await updateClassifications(db, Array.from(validMap.values()), warnings)
+        }
       }
     }
 
