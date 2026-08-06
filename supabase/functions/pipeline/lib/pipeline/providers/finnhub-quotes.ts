@@ -1,8 +1,19 @@
-import { EQUITY_SYMBOLS } from "../config"
-import type { QuoteUpdate } from "../quotes"
-import type { IQuoteProvider } from "./types"
+import { EQUITY_SYMBOLS } from "../config.ts"
+import type { QuoteUpdate } from "../quotes.ts"
+import type { IQuoteProvider } from "./types.ts"
 
 const FINNHUB_BASE = "https://finnhub.io/api/v1"
+
+let quoteWindow: { start: number; count: number } | null = null
+
+/** Restrict the next fetchQuotes() call to symbols[start .. start+count). */
+export function setQuoteWindow(start: number, count: number): void {
+  quoteWindow = { start, count }
+}
+
+export function clearQuoteWindow(): void {
+  quoteWindow = null
+}
 
 function toUpdate(symbol: string, price: number, prevClose: number): QuoteUpdate | null {
   if (!Number.isFinite(price) || price <= 0) return null
@@ -55,18 +66,22 @@ export class FinnhubQuoteProvider implements IQuoteProvider {
   readonly market = "us_equities"
 
   async fetchQuotes(): Promise<{ quotes: QuoteUpdate[]; errors: string[] }> {
-    const token = process.env.FINNHUB_API_KEY
+    const token = Deno.env.get("FINNHUB_API_KEY")
     if (!token) throw new Error("Missing FINNHUB_API_KEY")
 
     const quotes: QuoteUpdate[] = []
     const errors: string[] = []
-    const batchSize = 5
+    const symbols = quoteWindow
+      ? EQUITY_SYMBOLS.slice(quoteWindow.start, quoteWindow.start + quoteWindow.count)
+      : EQUITY_SYMBOLS
+    const batchSize = quoteWindow ? 1 : 10
+    const pauseMs = quoteWindow ? 1000 : 1000
 
-    for (let i = 0; i < EQUITY_SYMBOLS.length; i += batchSize) {
+    for (let i = 0; i < symbols.length; i += batchSize) {
       if (i > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 2000))
+        await new Promise((resolve) => setTimeout(resolve, pauseMs))
       }
-      const batch = EQUITY_SYMBOLS.slice(i, i + batchSize)
+      const batch = symbols.slice(i, i + batchSize)
       const results = await Promise.allSettled(
         batch.map((symbol) => fetchQuoteWithRetry(symbol, token)),
       )

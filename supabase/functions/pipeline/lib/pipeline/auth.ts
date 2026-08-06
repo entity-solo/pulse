@@ -3,7 +3,7 @@
  * invocable. Vercel Cron sends `Authorization: Bearer $CRON_SECRET`.
  */
 export function isAuthorizedCron(request: Request): boolean {
-  const secret = process.env.CRON_SECRET
+  const secret = Deno.env.get("CRON_SECRET")
   // Fail closed: with no secret configured, refuse rather than run open.
   if (!secret) return false
 
@@ -11,7 +11,9 @@ export function isAuthorizedCron(request: Request): boolean {
   if (header === `Bearer ${secret}`) return true
 
   // Allows manual triggering with ?secret=… during local development only.
-  if (process.env.NODE_ENV !== "production") {
+  // Fail closed: Supabase does not set NODE_ENV, so require it to be explicitly
+  // "development" before honoring the query-param bypass.
+  if (Deno.env.get("NODE_ENV") === "development") {
     const url = new URL(request.url)
     if (url.searchParams.get("secret") === secret) return true
   }

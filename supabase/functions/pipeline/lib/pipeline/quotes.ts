@@ -1,5 +1,5 @@
-import { defaultRegistry } from "./providers/registry"
-import type { IQuoteProvider } from "./providers/types"
+import { defaultRegistry } from "./providers/registry.ts"
+import type { IQuoteProvider } from "./providers/types.ts"
 
 export type QuoteUpdate = {
   symbol: string

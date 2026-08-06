@@ -165,7 +165,7 @@ export const US_EQUITIES_ALIASES: Record<string, readonly string[]> = Object.fro
 )
 `
 
-  const targetDir = resolve(process.cwd(), "lib/pipeline/markets")
+  const targetDir = resolve(process.cwd(), "supabase/functions/pipeline/lib/pipeline/markets")
   await mkdir(targetDir, { recursive: true })
 
   const targetFile = resolve(targetDir, "us-equities.ts")

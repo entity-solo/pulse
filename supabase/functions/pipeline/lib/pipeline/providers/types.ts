@@ -1,5 +1,5 @@
-import type { Article } from "../news"
-import type { QuoteUpdate } from "../quotes"
+import type { Article } from "../news.ts"
+import type { QuoteUpdate } from "../quotes.ts"
 
 export interface IQuoteProvider {
   readonly name: string

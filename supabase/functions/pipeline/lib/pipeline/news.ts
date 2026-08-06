@@ -1,5 +1,5 @@
-import { defaultRegistry } from "./providers/registry"
-import type { INewsProvider } from "./providers/types"
+import { defaultRegistry } from "./providers/registry.ts"
+import type { INewsProvider } from "./providers/types.ts"
 
 export type Article = { headline: string; summary: string; outlet: string; url: string; publishedAt: string; relatedSymbol: string | null }
 
@@ -16,6 +16,7 @@ export const ALLOWED_DOMAINS = [
   "apnews.com",
   "barrons.com",
   "benzinga.com",
+  "google.com",
 ] as const
 
 export const FINANCIAL_KEYWORDS = [

@@ -1,6 +1,6 @@
-import { INGEST, RSS_FEEDS } from "../config"
-import type { Article } from "../news"
-import type { INewsProvider } from "./types"
+import { INGEST, RSS_FEEDS } from "../config.ts"
+import type { Article } from "../news.ts"
+import type { INewsProvider } from "./types.ts"
 
 type RssItem = Omit<Article, "relatedSymbol">
 

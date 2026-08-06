@@ -1,2 +1,2 @@
-[functions.sync]
+[functions.pipeline]
 verify_jwt = false

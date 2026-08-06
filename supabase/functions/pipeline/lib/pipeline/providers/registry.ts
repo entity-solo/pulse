@@ -1,10 +1,10 @@
-import { MACRO_SYMBOL_MAP } from "../config"
-import { US_EQUITIES_ALIASES, US_EQUITIES_SYMBOLS, US_EQUITIES_TICKERS } from "../markets/us-equities"
-import { FinnhubQuoteProvider } from "./finnhub-quotes"
-import { RssNewsProvider } from "./rss-news"
-import { Sp500TickerUniverse } from "./sp500-universe"
-import type { INewsProvider, IQuoteProvider, ITickerUniverse } from "./types"
-import { YahooMacroQuoteProvider } from "./yahoo-macro-quotes"
+import { MACRO_SYMBOL_MAP } from "../config.ts"
+import { US_EQUITIES_ALIASES, US_EQUITIES_SYMBOLS, US_EQUITIES_TICKERS } from "../markets/us-equities.ts"
+import { FinnhubQuoteProvider } from "./finnhub-quotes.ts"
+import { RssNewsProvider } from "./rss-news.ts"
+import { Sp500TickerUniverse } from "./sp500-universe.ts"
+import type { INewsProvider, IQuoteProvider, ITickerUniverse } from "./types.ts"
+import { YahooMacroQuoteProvider } from "./yahoo-macro-quotes.ts"
 
 export const MARKETS = {
   US_EQUITIES: {

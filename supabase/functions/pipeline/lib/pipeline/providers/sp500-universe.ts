@@ -1,5 +1,5 @@
-import { US_EQUITIES_ALIASES, US_EQUITIES_SYMBOLS } from "../markets/us-equities"
-import type { ITickerUniverse } from "./types"
+import { US_EQUITIES_ALIASES, US_EQUITIES_SYMBOLS } from "../markets/us-equities.ts"
+import type { ITickerUniverse } from "./types.ts"
 
 function normalize(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()

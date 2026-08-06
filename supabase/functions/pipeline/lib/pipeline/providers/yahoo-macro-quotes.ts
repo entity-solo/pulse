@@ -1,6 +1,6 @@
-import { MACRO_SYMBOL_MAP } from "../config"
-import type { QuoteUpdate } from "../quotes"
-import type { IQuoteProvider } from "./types"
+import { MACRO_SYMBOL_MAP } from "../config.ts"
+import type { QuoteUpdate } from "../quotes.ts"
+import type { IQuoteProvider } from "./types.ts"
 
 const YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
 
