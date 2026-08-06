@@ -266,7 +266,7 @@ STRICT CONSTRAINTS:
     console.log(`[timing] Groq analysis call (${classification.value} [${cluster.length} sources] - "${label}"): ${analysisMs}ms`)
     const bucket = windowBucket(cluster[0].article.publishedAt)
     const sources = cluster.slice(0, INGEST.maxSourcesPerStory).map((item, index) => ({ article: item.article, angle: Array.isArray(result.source_angles) ? sentiment(result.source_angles[index]) : "neut" as Sentiment }))
-    return { event_key: slug(`${ticker}-${bucket}-${label}`), event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((earliest, source) => source.article.publishedAt < earliest ? source.article.publishedAt : earliest, sources[0].article.publishedAt) }
+    return { event_key: slug(`${ticker}-${bucket}-${label}`), event_label: label, ticker, is_macro: isMacro, sentiment: sentiment(result.sentiment), title, summary: `${summary} Market impact: ${impact}`, sources, publishedAt: sources.reduce((latest, source) => source.article.publishedAt > latest ? source.article.publishedAt : latest, sources[0].article.publishedAt) }
   } catch (error) {
     const analysisMs = Date.now() - tAnalysisStart
     console.log(`[timing] Groq analysis call (${classification.value}): failed/skipped after ${analysisMs}ms`)
