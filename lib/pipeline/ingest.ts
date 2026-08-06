@@ -105,7 +105,12 @@ export async function runIngestNews(): Promise<RunResult> {
   return result
 }
 
-function cacheToClassified(rows: CacheRow[]): ClassifiedArticle[] {
+type ClassifiedArticleWithVector = ClassifiedArticle & {
+  embedding?: number[] | null
+  clusterId?: string | null
+}
+
+function cacheToClassified(rows: CacheRow[]): ClassifiedArticleWithVector[] {
   return rows.flatMap((row) => {
     const data = row.classification
     if (!data || typeof data !== "object") return []
@@ -115,7 +120,12 @@ function cacheToClassified(rows: CacheRow[]): ClassifiedArticle[] {
     const confidence = Number(value.confidence)
     const evidence = String(value.evidence ?? "")
     if (kind === "none" || !Number.isFinite(confidence) || !evidence || !["ticker", "sector"].includes(kind)) return []
-    return [{ article: { url: row.url, headline: row.headline, summary: row.summary, outlet: row.outlet, publishedAt: row.published_at, relatedSymbol: null }, classification: { kind: kind as "ticker", value: target, confidence, evidence } as any }]
+    return [{
+      article: { url: row.url, headline: row.headline, summary: row.summary, outlet: row.outlet, publishedAt: row.published_at, relatedSymbol: null },
+      classification: { kind: kind as "ticker", value: target, confidence, evidence } as any,
+      embedding: (row as any).embedding ?? null,
+      clusterId: (row as any).cluster_id ?? null,
+    }]
   })
 }
 
@@ -127,7 +137,7 @@ async function updateClassifications(db: Db, classified: ClassifiedArticle[], wa
 
 export async function findOrCreateCluster(
   db: Db,
-  classifiedRows: ClassifiedArticle[],
+  classifiedRows: ClassifiedArticleWithVector[],
   tickerContext: Map<string, { price: number; change_pct: number; direction: string }>
 ) {
   let matchedCount = 0
@@ -138,19 +148,13 @@ export async function findOrCreateCluster(
   for (const item of classifiedRows) {
     let matchedStoryId: string | null = null
 
-    const { data: cacheRow } = await db
-      .from("article_cache")
-      .select("url, embedding, cluster_id")
-      .eq("url", item.article.url)
-      .single()
-
-    if (cacheRow?.cluster_id) {
+    if (item.clusterId) {
       continue
     }
 
-    if (cacheRow?.embedding) {
+    if (item.embedding) {
       const { data: matchData, error: rpcErr } = await db.rpc("match_existing_story" as any, {
-        query_embedding: cacheRow.embedding,
+        query_embedding: item.embedding,
         match_threshold: 0.15,
         since_timestamp: since24h,
       } as any)

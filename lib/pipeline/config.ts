@@ -1,5 +1,5 @@
 import type { Sector } from "@/lib/types"
-import { TOP100_SYMBOLS } from "./sp500"
+import { US_EQUITIES_SYMBOLS } from "./markets/us-equities"
 
 /**
  * The ticker universe is owned by the `tickers` table, not by this file.
@@ -8,7 +8,7 @@ import { TOP100_SYMBOLS } from "./sp500"
  */
 
 /** Symbols Finnhub quotes directly (US equities). Refreshed every 15 min. */
-export const EQUITY_SYMBOLS = TOP100_SYMBOLS
+export const EQUITY_SYMBOLS = US_EQUITIES_SYMBOLS
 
 /**
  * Non-equity symbols mapped to their Yahoo Finance chart symbol.
