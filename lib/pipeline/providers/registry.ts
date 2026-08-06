@@ -73,6 +73,31 @@ export class ProviderRegistry {
         candidateSet.add(ticker)
       }
     }
+
+    const text = `${headline} ${summary}`
+    const EXCLUDED_TERMS = new Set(["US", "AI", "CEO", "CFO", "CTO", "COO", "EBITDA", "EBIT", "GDP", "FDA", "SEC", "IPO", "RSS", "WSJ", "FT", "UK", "EU", "Q1", "Q2", "Q3", "Q4", "FY", "EST", "EDT", "UTC", "PST", "PDT", "ESG", "PR", "REUTERS", "AP", "BLOOMBERG", "CNBC", "BMO", "AMC", "EPS"])
+
+    // Match (NYSE:TICKER), (NASDAQ:TICKER), (NYSE: TICKER), NYSE:TICKER, NASDAQ:TICKER
+    const exchangeMatches = text.matchAll(/\b(?:NYSE|NASDAQ|AMEX|OTC|LON|TSX):\s*([A-Z]{1,5})\b/gi)
+    for (const match of exchangeMatches) {
+      const sym = match[1].toUpperCase()
+      if (!EXCLUDED_TERMS.has(sym)) candidateSet.add(sym)
+    }
+
+    // Match (TICKER) in parentheses e.g. (NYSE:PAYC) or (PAYC)
+    const parenMatches = text.matchAll(/\(([A-Z]{1,5})\)/g)
+    for (const match of parenMatches) {
+      const sym = match[1].toUpperCase()
+      if (!EXCLUDED_TERMS.has(sym)) candidateSet.add(sym)
+    }
+
+    // Match $TICKER cashtags
+    const cashtagMatches = text.matchAll(/\$([A-Z]{1,5})\b/g)
+    for (const match of cashtagMatches) {
+      const sym = match[1].toUpperCase()
+      if (!EXCLUDED_TERMS.has(sym)) candidateSet.add(sym)
+    }
+
     return Array.from(candidateSet)
   }
 }

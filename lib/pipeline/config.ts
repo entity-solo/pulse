@@ -82,7 +82,7 @@ export const INGEST = {
   classificationMaxTokens: 2_000,
   /** Output ceiling for a single cluster analysis. */
   analysisMaxTokens: 650,
-  minimumClassificationConfidence: 0.78,
+  minimumClassificationConfidence: 0.60,
   /** Articles older than this are ignored. Always covers full cluster window with 6h margin. */
   articleMaxAgeHours: 36 + 6,
   /** Minimum articles required to form a story. */

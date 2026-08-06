@@ -3,7 +3,7 @@ import type { Article } from "./news"
 import { defaultRegistry } from "./providers/registry"
 
 const getAllowedSymbols = () => new Set<string>([...ALL_SYMBOLS, ...defaultRegistry.getAllSymbols()])
-const sectors = ["tech", "finance", "energy", "macro"] as const
+const sectors = ["tech", "finance", "energy", "macro", "healthcare", "industrials", "consumer", "materials", "utilities", "realestate"] as const
 type Sector = (typeof sectors)[number]
 type Sentiment = "bull" | "bear" | "neut"
 export type Classification =
@@ -13,7 +13,19 @@ export type Classification =
 
 export type ClassifiedArticle = { article: Article; classification: Classification }
 
-const sectorTicker: Record<Sector, string> = { tech: "NDX", finance: "SPX", energy: "WTI", macro: "SPX" }
+const sectorTicker: Record<Sector, string> = {
+  tech: "NDX",
+  finance: "SPX",
+  energy: "WTI",
+  macro: "SPX",
+  healthcare: "SPX",
+  industrials: "SPX",
+  consumer: "SPX",
+  materials: "SPX",
+  utilities: "SPX",
+  realestate: "SPX",
+}
+
 const stopWords = new Set(["the", "and", "for", "with", "from", "after", "into", "over", "that", "this", "will", "stock", "shares", "market", "company", "reports", "quarterly", "earnings", "says", "said"])
 
 export type ClusteredEvent = { event_key: string; event_label: string; ticker: string; is_macro: boolean; sentiment: Sentiment; title: string; summary: string; sources: Array<{ article: Article; angle: Sentiment }>; publishedAt: string }
@@ -175,14 +187,15 @@ export async function classifyArticles(articles: Article[]): Promise<{ classifie
     const batch = articles.slice(start, start + INGEST.classificationBatchSize); const candidateSets = batch.map(candidates)
     const tBatchStart = Date.now()
     try {
-      const result = await groqJson(CLASSIFICATION_MODEL, `Return only JSON: {"articles":[{"index":0,"kind":"ticker|sector|none","value":"allowed value or none","confidence":0.0,"evidence":"exact short excerpt"}]}. For ticker, choose only from the article's candidate list; if it is empty, ticker is forbidden. Allowed sectors are tech, finance, energy, macro. Return none for ambiguity, unrelated coverage, or confidence below 0.78. Evidence must be a verbatim article excerpt supporting the decision.`, catalogue(batch, candidateSets), budget, INGEST.classificationMaxTokens, batch.length) as { articles?: unknown[] }
+      const result = await groqJson(CLASSIFICATION_MODEL, `Return only JSON: {"articles":[{"index":0,"kind":"ticker|sector|none","value":"allowed value or none","confidence":0.0,"evidence":"exact short excerpt"}]}. For ticker, choose the stock ticker symbol mentioned in the article or candidate list. Allowed sectors are tech, finance, energy, macro, healthcare, industrials, consumer, materials, utilities, realestate. Return none for ambiguity, unrelated non-financial coverage, or confidence below 0.60. Evidence must be a verbatim article excerpt supporting the decision.`, catalogue(batch, candidateSets), budget, INGEST.classificationMaxTokens, batch.length) as { articles?: unknown[] }
       const batchMs = Date.now() - tBatchStart
       console.log(`[timing] Groq classification batch (size ${batch.length}): ${batchMs}ms`)
       for (const item of Array.isArray(result.articles) ? result.articles : []) {
         if (!item || typeof item !== "object") continue; const row = item as Record<string, unknown>; const index = Number(row.index); if (!Number.isInteger(index) || !batch[index]) continue
         const kind = String(row.kind ?? "none").toLowerCase(), value = String(row.value ?? "").trim(), confidence = Number(row.confidence), evidence = String(row.evidence ?? "").trim(); const body = `${batch[index].headline} ${batch[index].summary}`.toLowerCase()
         if (!Number.isFinite(confidence) || confidence < INGEST.minimumClassificationConfidence || !evidence || !body.includes(evidence.toLowerCase())) { warnings.push(`discarded low-confidence/unsupported classification for ${batch[index].url}`); continue }
-        if (kind === "ticker" && candidateSets[index].includes(value.toUpperCase()) && getAllowedSymbols().has(value.toUpperCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "ticker", value: value.toUpperCase(), confidence, evidence } })
+        const isValidTicker = /^[A-Z]{1,5}$/.test(value.toUpperCase())
+        if (kind === "ticker" && isValidTicker) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "ticker", value: value.toUpperCase(), confidence, evidence } })
         else if (kind === "sector" && (sectors as readonly string[]).includes(value.toLowerCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "sector", value: value.toLowerCase() as Sector, confidence, evidence } })
       }
     } catch (error) {

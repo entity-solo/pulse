@@ -625,29 +625,34 @@ const ALIASES: Record<string, string[]> = {
   PH: ["parker hannifin", "ph"],
   KMI: ["kinder morgan", "kmi"],
   AMT: ["american tower", "amt"],
-  SHW: ["sherwin-williams", "shw"],
-  MO: ["altria", "mo", "marlboro"],
-  SLB: ["schlumberger", "slb"],
-  CVS: ["cvs", "cvs health"],
-  CDNS: ["cadence", "cdns"],
-  KKR: ["kkr"],
+  NKE: ["nike", "nke"],
+  ADBE: ["adobe", "adbe"],
+  BX: ["blackstone"],
+  PLTR: ["palantir", "alex karp", "pltr"],
+  MU: ["micron"],
+  SBUX: ["starbucks"],
+  PANW: ["palo alto networks"],
+  UPS: ["ups"]
 }
 
 const STOP_WORDS = new Set([
-  "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "aren't", "as", "at",
-  "be", "because", "been", "before", "being", "below", "between", "both", "but", "by", "can't", "cannot", "could",
-  "couldn't", "did", "didn't", "do", "does", "doesn't", "doing", "don't", "down", "during", "each", "few", "for",
-  "from", "further", "had", "hadn't", "has", "hasn't", "have", "haven't", "having", "he", "he'd", "he'll", "he's",
-  "her", "here", "here's", "hers", "herself", "him", "himself", "his", "how", "how's", "i", "i'd", "i'll", "i'm",
-  "i've", "if", "in", "into", "is", "isn't", "it", "it's", "its", "itself", "let's", "me", "more", "most", "mustn't",
-  "my", "myself", "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other", "ought", "our", "ours",
-  "ourselves", "out", "over", "own", "same", "shan't", "she", "she'd", "she'll", "she's", "should", "shouldn't",
-  "so", "some", "such", "than", "that", "that's", "the", "their", "theirs", "them", "themselves", "then", "there",
-  "there's", "these", "they", "they'd", "they'll", "they're", "they've", "this", "those", "through", "to", "too",
-  "under", "until", "up", "very", "was", "wasn't", "we", "we'd", "we'll", "we're", "we've", "were", "weren't",
-  "what", "what's", "when", "when's", "where", "where's", "which", "while", "who", "who's", "whom", "why", "why's",
-  "with", "won't", "would", "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours", "yourself",
-  "yourselves", "stock", "shares", "market", "company", "reports", "earnings"
+  "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are",
+  "aren't", "as", "at", "be", "because", "been", "before", "being", "below", "between", "both",
+  "but", "by", "can't", "cannot", "could", "couldn't", "did", "didn't", "do", "does", "doesn't",
+  "doing", "don't", "down", "during", "each", "few", "for", "from", "further", "had", "hadn't",
+  "has", "hasn't", "have", "haven't", "having", "he", "he'd", "he'll", "he's", "her", "here",
+  "here's", "hers", "herself", "him", "himself", "his", "how", "how's", "i", "i'd", "i'll",
+  "i'm", "i've", "if", "in", "into", "is", "isn't", "it", "it's", "its", "itself", "let's",
+  "me", "more", "most", "mustn't", "my", "myself", "no", "nor", "not", "of", "off", "on",
+  "once", "only", "or", "other", "ought", "our", "ours", "ourselves", "out", "over", "own",
+  "same", "shan't", "she", "she'd", "she'll", "she's", "should", "shouldn't", "so", "some",
+  "such", "than", "that", "that's", "the", "their", "theirs", "them", "themselves", "then",
+  "there", "there's", "these", "they", "they'd", "they'll", "they're", "they've", "this",
+  "those", "through", "to", "too", "under", "until", "up", "very", "was", "wasn't", "we",
+  "we'd", "we'll", "we're", "we've", "were", "weren't", "what", "what's", "when", "when's",
+  "where", "where's", "which", "while", "who", "who's", "whom", "why", "why's", "with",
+  "won't", "would", "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours",
+  "yourself", "yourselves", "stock", "shares", "market", "company", "reports", "earnings"
 ])
 
 const FEEDS = [
@@ -690,7 +695,7 @@ const CONFIG = {
   analysisTokenBudget: 15_000,
   classificationMaxTokens: 2_000,
   analysisMaxTokens: 650,
-  minimumClassificationConfidence: 0.78,
+  minimumClassificationConfidence: 0.60,
   articleMaxAgeHours: 36 + 6,
   clusterWindowHours: 36,
   clusterMinSharedWords: 2,
@@ -753,8 +758,26 @@ function deriveDeterministicEventKey(ticker: string, sourceUrls: string[]): stri
 function parseJson(text: string) { const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""); const start = trimmed.indexOf("{"); const end = trimmed.lastIndexOf("}"); return JSON.parse(start >= 0 && end >= start ? trimmed.slice(start, end + 1) : trimmed) }
 
 function candidates(article: Article) {
-  const text = ` ${normalize(`${article.headline} ${article.summary}`)} `
-  return Object.entries(ALIASES).flatMap(([ticker, names]) => names.some((name) => text.includes(` ${normalize(name)} `)) ? [ticker] : [])
+  const candidateSet = new Set<string>()
+  const textNorm = ` ${normalize(`${article.headline} ${article.summary}`)} `
+  for (const [ticker, names] of Object.entries(ALIASES)) {
+    if (names.some((name) => textNorm.includes(` ${normalize(name)} `))) candidateSet.add(ticker)
+  }
+  const rawText = `${article.headline} ${article.summary}`
+  const EXCLUDED_TERMS = new Set(["US", "AI", "CEO", "CFO", "CTO", "COO", "EBITDA", "EBIT", "GDP", "FDA", "SEC", "IPO", "RSS", "WSJ", "FT", "UK", "EU", "Q1", "Q2", "Q3", "Q4", "FY", "EST", "EDT", "UTC", "PST", "PDT", "ESG", "PR", "REUTERS", "AP", "BLOOMBERG", "CNBC", "BMO", "AMC", "EPS"])
+  for (const match of rawText.matchAll(/\b(?:NYSE|NASDAQ|AMEX|OTC|LON|TSX):\s*([A-Z]{1,5})\b/gi)) {
+    const sym = match[1].toUpperCase()
+    if (!EXCLUDED_TERMS.has(sym)) candidateSet.add(sym)
+  }
+  for (const match of rawText.matchAll(/\(([A-Z]{1,5})\)/g)) {
+    const sym = match[1].toUpperCase()
+    if (!EXCLUDED_TERMS.has(sym)) candidateSet.add(sym)
+  }
+  for (const match of rawText.matchAll(/\$([A-Z]{1,5})\b/g)) {
+    const sym = match[1].toUpperCase()
+    if (!EXCLUDED_TERMS.has(sym)) candidateSet.add(sym)
+  }
+  return Array.from(candidateSet)
 }
 
 const TICKER_SECTOR: Record<string, string> = { AAPL: "tech", MSFT: "tech", NVDA: "tech", AMZN: "tech", GOOGL: "tech", META: "tech", TSLA: "consumer", "BRK.B": "finance", LLY: "healthcare", AVGO: "tech", JPM: "finance", WMT: "consumer", UNH: "healthcare", V: "finance", XOM: "energy", MA: "finance", ORCL: "tech", COST: "consumer", HD: "consumer", PG: "consumer", JNJ: "healthcare", NFLX: "tech", BAC: "finance", ABBV: "healthcare", CRM: "tech", CVX: "energy", WFC: "finance", KO: "consumer", CSCO: "tech", PEP: "consumer", IBM: "tech", MS: "finance", ACN: "tech", MCD: "consumer", DIS: "media", GE: "industrials", INTU: "tech", QCOM: "tech", CAT: "industrials", AMD: "tech", TXN: "tech", BKNG: "consumer", AMAT: "tech", PFE: "healthcare", NOW: "tech", AMGN: "healthcare", C: "finance", GS: "finance", COP: "energy", HON: "industrials", BA: "industrials", ADP: "tech", NKE: "consumer", ADBE: "tech", BX: "finance", PLTR: "tech", MU: "tech", SBUX: "consumer", PANW: "tech", UPS: "industrials" }
@@ -1001,7 +1024,7 @@ async function classify(groqKey: string, rows: Article[], budget: Budget, warnin
     const batch = rows.slice(start, start + CONFIG.classificationBatchSize)
     const candidateSets = batch.map(candidates)
     try {
-      const result = await groqJson(groqKey, "llama-3.1-8b-instant", `Return only JSON: {"articles":[{"index":0,"kind":"ticker|sector|none","value":"allowed value or none","confidence":0.0,"evidence":"exact short excerpt"}]}. For ticker, choose only from the article's candidate list; if it is empty, ticker is forbidden. Allowed sectors are tech, finance, energy, macro. Return none for ambiguity, unrelated coverage, or confidence below 0.78. Evidence must be a verbatim article excerpt supporting the decision.`, catalogue(batch, candidateSets), budget, CONFIG.classificationMaxTokens, batch.length) as { articles?: unknown[] }
+      const result = await groqJson(groqKey, "llama-3.1-8b-instant", `Return only JSON: {"articles":[{"index":0,"kind":"ticker|sector|none","value":"allowed value or none","confidence":0.0,"evidence":"exact short excerpt"}]}. For ticker, choose the stock ticker symbol mentioned in the article or candidate list. Allowed sectors are tech, finance, energy, macro, healthcare, industrials, consumer, materials, utilities, realestate. Return none for ambiguity, unrelated non-financial coverage, or confidence below 0.60. Evidence must be a verbatim article excerpt supporting the decision.`, catalogue(batch, candidateSets), budget, CONFIG.classificationMaxTokens, batch.length) as { articles?: unknown[] }
       for (const item of Array.isArray(result.articles) ? result.articles : []) {
         if (!item || typeof item !== "object") continue
         const row = item as Record<string, unknown>
@@ -1013,7 +1036,8 @@ async function classify(groqKey: string, rows: Article[], budget: Budget, warnin
           warnings.push(`discarded low-confidence/unsupported classification for ${batch[index].url}`)
           continue
         }
-        if (kind === "ticker" && candidateSets[index].includes(value.toUpperCase()) && ALLOWED_SYMBOLS.has(value.toUpperCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "ticker", value: value.toUpperCase(), confidence: conf, evidence } })
+        const isValidTicker = /^[A-Z]{1,5}$/.test(value.toUpperCase())
+        if (kind === "ticker" && isValidTicker) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "ticker", value: value.toUpperCase(), confidence: conf, evidence } })
         else if (kind === "sector" && (SECTORS as readonly string[]).includes(value.toLowerCase())) classifiedMap.set(batch[index].url, { article: batch[index], classification: { kind: "sector", value: value.toLowerCase() as Sector, confidence: conf, evidence } })
       }
     } catch (e) {
